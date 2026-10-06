@@ -32,6 +32,13 @@ export const DEFAULTS = {
   mgrDownTicks: 80, // how long a crashed region manager stays down
   reconcileTicks: 30, // how long a restarted manager waits for robot reports
   injectFailures: false, // benchmark: periodically crash/pause robots and managers
+  // Congestion control: managers gossip region loads; robots route around
+  // crowded regions and don't dispatch themselves into full ones.
+  congestion: true,
+  gossipEvery: 20, // ticks between a manager's load gossip rounds
+  crowdedAt: 0.3, // region load (leased cells / open cells) where routing starts to detour
+  detourWeight: 6, // extra planning cost per cell, per unit of load above crowdedAt
+  admitBelow: 0.32, // a robot won't pick a job in a region at or above this load
 };
 
 const WAIT_BIN = 0.25; // seconds per wait-histogram bin
@@ -60,6 +67,7 @@ export class Simulation {
     this.contacts = new Set();
     this.taskTicks = [];
     this.maintenance = [];
+    this.deadZones = []; // network partitions: { x0, y0, x1, y1, from, until }
     this.metrics = {
       moves: 0, tasks: 0, msgs: 0, dropped: 0, grants: 0, expired: 0,
       collisions: 0, deadlocks: 0, resolved: 0, resolveTicks: 0, probes: 0,
@@ -117,7 +125,16 @@ export class Simulation {
     this.script?.onTick?.(this);
     if (this.cfg.injectFailures && this.mode !== 'baseline') this.injectFailures();
 
-    for (const m of this.net.deliver(t)) this.endpoint(m.to).receive(m);
+    if (this.deadZones.length) this.healZones();
+    for (const m of this.net.deliver(t)) {
+      // A robot that drove into a dead zone while the message was in flight
+      // never hears it.
+      if (this.deadZones.length && this.isOffline(m.to)) {
+        this.net.drop(m);
+        continue;
+      }
+      this.endpoint(m.to).receive(m);
+    }
     for (const mgr of this.managers) mgr.step();
 
     for (const r of this.robots) {
@@ -128,6 +145,7 @@ export class Simulation {
 
     this.detectCollisions();
     this.runMaintenance();
+    this.trace?.afterStep(this);
 
     if (this.cycles.length) this.cycles = this.cycles.filter((c) => t - c.tick < 50);
     if (this.bursts.length) this.bursts = this.bursts.filter((b) => t - b.tick < 40);
@@ -286,6 +304,45 @@ export class Simulation {
     if (t % 900 === 450 && this.managers.every((m) => m.state === 'UP')) this.crashManager(this.rng.int(this.managers.length));
   }
 
+  // ───────────────────────────── partitions ─────────────────────────────
+
+  // A Wi-Fi dead zone: every robot physically inside the rectangle can neither
+  // send nor receive. Managers and the world keep running; to a manager, a
+  // robot behind a partition looks exactly like a crashed one.
+  cutNetwork(cx, cy, r = 2, ticks = 160) {
+    const z = { x0: cx - r, y0: cy - r, x1: cx + r, y1: cy + r, from: this.tick, until: this.tick + ticks };
+    this.deadZones.push(z);
+    const inside = this.robots.filter((rb) => !rb.removed && this.inZone(z, rb)).map((rb) => rb.id);
+    this.event('partition', `Network partition: robots in ${fmtCell(cx - r + (cy - r) * W)}–${fmtCell(cx + r + (cy + r) * W)} are cut off for ${((ticks * this.cfg.tickMs) / 1000).toFixed(0)}s (${inside.length} inside)`, { cell: cx + cy * W, robots: inside });
+    this.flag('partition');
+    return z;
+  }
+
+  healZones() {
+    const t = this.tick;
+    for (const z of this.deadZones) {
+      if (z.until > t) continue;
+      this.event('healed', `Network partition healed after ${(((t - z.from) * this.cfg.tickMs) / 1000).toFixed(0)}s: cut-off robots can talk again`, { cell: ((z.x0 + z.x1) >> 1) + ((z.y0 + z.y1) >> 1) * W });
+      this.flag('healed');
+    }
+    this.deadZones = this.deadZones.filter((z) => z.until > t);
+  }
+
+  inZone(z, r) {
+    for (const c of r.footprint) {
+      const x = xOf(c), y = yOf(c);
+      if (x >= z.x0 && x <= z.x1 && y >= z.y0 && y <= z.y1) return true;
+    }
+    return false;
+  }
+
+  // Is this network address a robot behind a partition?
+  isOffline(addr) {
+    if (!this.deadZones.length || addr[0] !== 'r') return false;
+    const r = this.robots[+addr.slice(1)];
+    return !!r && this.deadZones.some((z) => this.inZone(z, r));
+  }
+
   recordRecovery(kind, ticks) {
     this.recovery[kind].push(ticks);
   }
@@ -358,7 +415,7 @@ export class Simulation {
 
   // ───────────────────────────── deadlocks ─────────────────────────────
 
-  onDeadlock(cycle, detector, alts = []) {
+  onDeadlock(cycle, detector, alts = [], rel = []) {
     const t = this.tick;
     const key = [...cycle].sort((a, b) => a - b).join(',');
     const last = this.recentDeadlocks.get(key);
@@ -368,20 +425,27 @@ export class Simulation {
     this.metrics.deadlocks++;
     const members = cycle.map((id) => this.robots[id]);
     const formed = Math.max(...members.map((r) => r.waitSince));
-    // Lowest priority yields (ties: higher robot ID), preferring robots that
-    // have another way to go: in a gridlocked loop, yielding is only useful
-    // for a robot that can actually move somewhere else.
+    // Lowest priority yields (ties: higher robot ID), but only among robots
+    // whose yield actually breaks the cycle. Best: a robot that merely
+    // *reserved* the cell the robot behind it wants, since yielding releases
+    // it. (A robot standing in that cell can cancel requests all day without
+    // freeing anything.) Next best, in a ring of robots each wanting the next
+    // one's cell: a robot that has another way to go.
     const lower = (a, b) => a.priority < b.priority || (a.priority === b.priority && a.id > b.id);
+    const releasing = members.filter((r, i) => rel[i]);
     const movable = members.filter((r, i) => alts[i]);
-    const pool = movable.length ? movable : members;
+    const pool = releasing.length ? releasing : movable.length ? movable : members;
     let victim = pool[0];
     for (const r of pool) if (lower(r, victim)) victim = r;
     this.openCycles.set(key, { formed, detected: t });
     this.cycles.push({ robots: cycle.slice(), tick: t, victim: victim.id, key });
     this.event('deadlock', `Probe from R${detector.id} returned: cycle ${cycle.map((i) => 'R' + i).join(' → ')} → R${cycle[0]}. R${victim.id} yields (priority ${victim.priority})`, { robots: cycle.slice(), victim: victim.id });
     this.flag('deadlock');
-    if (victim === detector) victim.yieldNow(key);
-    else detector.send('r' + victim.id, { type: 'ABORT', key });
+    // If the victim can't release anything (it stands in the cell the robot
+    // behind it wants), it is told to step aside instead of just cancelling.
+    const standing = !rel[members.indexOf(victim)];
+    if (victim === detector) victim.yieldNow(key, standing);
+    else detector.send('r' + victim.id, { type: 'ABORT', key, standing });
   }
 
   onYield(r, key, cell) {

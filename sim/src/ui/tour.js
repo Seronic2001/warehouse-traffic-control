@@ -77,14 +77,14 @@ export class Tour {
     app.scenario = null;
     app.ctx = null;
     app.attach(new Simulation({ ...app.cfg, mode: 'detect', robots: 120 }));
-    for (let i = 0; i < 1200; i++) app.sim.step();
+    for (let i = 0; i < 1200; i++) app.step();
     this.ownSim = app.sim;
   }
 
   scenario(key, until) {
     const app = this.app;
     app.startScenario(key, { silent: true });
-    for (let i = 0; i < 400 && !until(app.sim); i++) app.sim.step();
+    for (let i = 0; i < 400 && !until(app.sim); i++) app.step();
   }
 
   reset() {
@@ -287,7 +287,7 @@ function buildSteps() {
         // robot has not started moving into it yet.
         const ready = (x) => !x.motion && [...x.leases.keys()].some((c) => c !== x.cell);
         for (let i = 0; i < 300 && !ready(r); i++) {
-          app.sim.step();
+          app.step();
           if (i === 150) r = app.sim.robots.find((x) => x.alive && ready(x)) || r;
         }
         app.setRunning(false);
@@ -334,7 +334,7 @@ function buildSteps() {
         t.freeRun();
         let w = pickWaiter(app.sim);
         for (let i = 0; i < 600 && !w; i++) {
-          app.sim.step();
+          app.step();
           if (i % 20 === 0) w = pickWaiter(app.sim);
         }
         app.setRunning(false);
@@ -505,8 +505,8 @@ function buildSteps() {
     {
       title: 'Your dashboard',
       body: `<p><b>Top right:</b> <b>protected collisions</b>, the one number that must always be 0. Below it are throughput, deadlocks, messages per move, fenced moves and an event log.</p>
-        <p><b>Bottom:</b> replay any of the four failure stories, or run the <b>benchmark</b>: strategies against density, the effect of the lease safety margin, and recovery times after failures.</p>
-        <p><b>Top:</b> switch to <b>Baseline</b> to watch robots without leases collide. You can click any robot or cell to inspect it.</p>`,
+        <p><b>Bottom:</b> replay any of the five failure stories, rewind the run with the <b>scrubber</b> (<b>[</b> and <b>]</b> jump 5 s), or run the <b>benchmark</b>: strategies against density, the lease safety margin, and recovery times after failures.</p>
+        <p><b>Top:</b> switch to <b>Baseline</b> to watch robots without leases collide. Click any robot to inspect it, then press <b>M</b> for its message timeline.</p>`,
       enter(t, app) {
         t.freeRun(true);
         document.body.classList.add('tour-dash');

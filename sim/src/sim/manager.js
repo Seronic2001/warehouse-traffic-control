@@ -25,6 +25,38 @@ export class RegionManager {
     this.gen = 0; // incarnation number, survives crashes
     this.backlog = [];
     this.held = new Set(); // free cells whose floor sensor still sees a robot
+    // Congestion: open cells in this region, and this manager's view of every
+    // region's load, spread by gossip. The view is replaced, never mutated,
+    // so replies can carry it by reference.
+    this.cap = 0;
+    for (let c = 0; c < sim.layout.N; c++) if (regionOf(c) === id && !sim.layout.solid[c]) this.cap++;
+    this.view = emptyView();
+    const { RX, RY } = sim.layout;
+    const x = id % RX, y = (id / RX) | 0;
+    this.peers = [[1, 0], [-1, 0], [0, 1], [0, -1]].filter(([dx, dy]) => x + dx >= 0 && y + dy >= 0 && x + dx < RX && y + dy < RY).map(([dx, dy]) => 'm' + (id + dx + dy * RX));
+  }
+
+  // Gossip round: refresh our own load, then push the whole view to the
+  // neighbouring managers. Newer entries (by tick stamp) win when merging.
+  gossip() {
+    const t = this.sim.tick;
+    const util = this.owned.size / this.cap;
+    const view = { util: this.view.util.slice(), stamp: this.view.stamp.slice() };
+    view.util[this.id] = util;
+    view.stamp[this.id] = t;
+    this.view = view;
+    for (const p of this.peers) this.send(p, { type: 'LOAD', view });
+  }
+
+  onLoad({ view }) {
+    let next = null;
+    for (let i = 0; i < view.util.length; i++) {
+      if (i === this.id || view.stamp[i] <= this.view.stamp[i]) continue;
+      next ??= { util: this.view.util.slice(), stamp: this.view.stamp.slice() };
+      next.util[i] = view.util[i];
+      next.stamp[i] = view.stamp[i];
+    }
+    if (next) this.view = next;
   }
 
   // Next epoch for a cell: always above anything issued in an earlier life.
@@ -42,6 +74,7 @@ export class RegionManager {
     this.blocked.clear();
     this.held.clear();
     this.backlog = [];
+    this.view = emptyView();
     sim.event('mgrdown', `Region manager M${this.id} crashed: its reservation table for region ${this.id} is lost`, { mgr: this.id });
     sim.flag('mgrDown');
   }
@@ -113,6 +146,9 @@ export class RegionManager {
   }
 
   send(to, msg) {
+    // Replies to robots carry this manager's load view (piggybacked: no
+    // extra messages).
+    if (to[0] === 'r' && this.sim.cfg.congestion && (msg.type === 'GRANT' || msg.type === 'QUEUED' || msg.type === 'RENEWED')) msg.loads = this.view;
     this.sim.net.send(this.addr, to, msg);
   }
 
@@ -121,6 +157,7 @@ export class RegionManager {
       this.sim.metrics.dropped++;
       return;
     }
+    if (m.type === 'LOAD') return this.onLoad(m);
     if (this.state === 'RECONCILING') {
       if (m.type === 'REPORT') {
         if (m.gen === this.gen) this.reports.set(m.robot, m);
@@ -312,6 +349,11 @@ export class RegionManager {
         }
       }
     }
+    if (sim.cfg.congestion && (t + this.id) % sim.cfg.gossipEvery === 0) this.gossip();
     this.activity *= 0.9;
   }
+}
+
+function emptyView() {
+  return { util: new Array(16).fill(0), stamp: new Array(16).fill(-1) };
 }

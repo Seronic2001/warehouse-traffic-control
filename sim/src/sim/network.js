@@ -15,9 +15,11 @@ export class Network {
     msg.from = from;
     msg.to = to;
     sim.metrics.msgs++;
-    const lost = loss > 0 && sim.rng.chance(loss);
+    let lost = loss > 0 && sim.rng.chance(loss);
     const at = sim.tick + Math.max(1, delayMin + sim.rng.int(delayMax - delayMin + 1));
-    if (this.record) this.flights.push({ msg, t0: sim.tick, t1: at, lost });
+    if (sim.deadZones.length && (sim.isOffline(from) || sim.isOffline(to))) lost = true;
+    if (this.record) this.flights.push((msg.flight = { msg, t0: sim.tick, t1: at, lost }));
+    if (sim.trace) msg.trace = sim.trace.onSend(msg, sim.tick, at, lost);
     if (lost) {
       sim.metrics.dropped++;
       return;
@@ -25,6 +27,13 @@ export class Network {
     let b = this.buckets.get(at);
     if (!b) this.buckets.set(at, (b = []));
     b.push(msg);
+  }
+
+  // Lost on arrival (the receiver is behind a partition).
+  drop(msg) {
+    this.sim.metrics.dropped++;
+    if (msg.flight) msg.flight.lost = true;
+    if (msg.trace) msg.trace.lost = true;
   }
 
   deliver(tick) {

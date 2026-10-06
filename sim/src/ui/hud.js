@@ -7,7 +7,7 @@ import { xOf, yOf, regionOf, fmtCell, cellOf } from '../sim/layout.js';
 import { fmtEpoch } from '../sim/manager.js';
 
 const $ = (id) => document.getElementById(id);
-const FEED_KINDS = new Set(['deadlock', 'fenced', 'blocked', 'regrant', 'cleared', 'crash', 'pause', 'collision', 'respawn', 'mgrdown', 'mgrrestart', 'reconciled']);
+const FEED_KINDS = new Set(['deadlock', 'fenced', 'blocked', 'regrant', 'cleared', 'crash', 'pause', 'collision', 'respawn', 'mgrdown', 'mgrrestart', 'reconciled', 'partition', 'healed']);
 
 export class Hud {
   constructor(app) {
@@ -98,6 +98,10 @@ export class Hud {
       app.cfg.clockDrift = v / 100;
       $('out-drift').textContent = `±${v}%`;
     });
+    $('in-congestion').addEventListener('change', (e) => {
+      app.cfg.congestion = e.target.checked;
+      app.restart();
+    });
     $('in-seed').addEventListener('change', (e) => {
       app.cfg.seed = Math.max(1, +e.target.value | 0);
       app.restart();
@@ -148,11 +152,13 @@ export class Hud {
       const app = this.app;
       const id = app.live.selected;
       const act = b.dataset.act;
-      if (act === 'crash') app.sim.crashRobot(id);
-      else if (act === 'pause') app.sim.pauseRobot(id, Math.round(app.sim.cfg.leaseTicks * 1.6));
+      if (act === 'crash') app.act('crashRobot', id);
+      else if (act === 'pause') app.act('pauseRobot', id, Math.round(app.sim.cfg.leaseTicks * 1.6));
       else if (act === 'follow') app.follow = !app.follow;
+      else if (act === 'timeline') app.timeline.toggle(true);
       else if (act === 'robot') app.select(+b.dataset.id);
-      else if (act === 'crashmgr') app.sim.crashManager(+b.dataset.id);
+      else if (act === 'crashmgr') app.act('crashManager', +b.dataset.id);
+      else if (act === 'cutnet') app.act('cutNetwork', +b.dataset.x, +b.dataset.y, 2, 160);
       this.onSelect();
     });
   }
@@ -174,6 +180,14 @@ export class Hud {
     $('inspector').hidden = true;
     document.querySelector('.right-col').classList.remove('has-inspector');
     this.syncTransport();
+    this.lastUpdate = 0;
+  }
+
+  // After a rewind: rebuild the event log from the restored simulation.
+  onSeek(sim) {
+    this.feedSeq = 0;
+    this.prevCollisions = sim.metrics.collisions;
+    $('feed-list').innerHTML = '';
     this.lastUpdate = 0;
   }
 
@@ -293,6 +307,8 @@ export class Hud {
       const holder = r.waitingFor >= 0 ? `<button class="linkish" data-act="robot" data-id="${r.waitingFor}">R${r.waitingFor}</button>` : 'manager';
       wait = `${fmtCell(r.waitCell)} · ${holder} · ${(((t - r.waitSince) * ms) / 1000).toFixed(1)}s`;
     }
+    const zone = sim.deadZones.find((z) => sim.inZone(z, r));
+    const offline = zone && !r.removed ? `${(((zone.until - t) * ms) / 1000).toFixed(1)}s left` : '';
     const leases = [...r.leases]
       .map(([cell, l]) => {
         const left = Math.max(0, l.expiry - t);
@@ -309,6 +325,7 @@ export class Hud {
         <dt>Priority</dt><dd>${r.priority} <span style="color:var(--muted)">(${r.basePrio} + ${aging} aging)</span></dd>
         <dt>Region</dt><dd>M${regionOf(r.cell)} · ${fmtCell(r.cell)}</dd>
         <dt>Waiting for</dt><dd>${wait}</dd>
+        ${offline ? `<dt>Network</dt><dd style="color:var(--red)">cut off · ${offline}</dd>` : ''}
       </dl>
       ${sim.cfg.mode === 'baseline' ? '<p class="ins-note">Baseline mode: robots move without leases.</p>' : `<div class="ins-h">Leases held (${r.leases.size})</div>${leases || '<p class="ins-note">None. This robot is not on the floor.</p>'}`}`;
     const key = `r${r.id}`;
@@ -319,6 +336,7 @@ export class Hud {
           <button class="ghost danger" data-act="crash" title="Kill this robot's process">Crash</button>
           <button class="ghost" data-act="pause" title="Freeze right before its next move, for longer than a lease">Freeze</button>
           <button class="ghost" data-act="follow" id="ins-follow" title="Follow with the camera (F)">Follow</button>
+          <button class="ghost" data-act="timeline" title="Show this robot's messages and leases over time (M)">Timeline</button>
         </div>
         <p class="ins-note">Use <b>Freeze</b> to make a stale lease get fenced by the world. Use <b>Crash</b> to leave a Blocked cell behind.</p>`;
     }
@@ -341,7 +359,10 @@ export class Hud {
     if (this.inspectorKey !== key) {
       this.inspectorKey = key;
       $('ins-body').innerHTML = `<div id="ins-dyn"></div>
-        <div class="ins-actions"><button class="ghost danger" data-act="crashmgr" data-id="${mgr.id}" title="Crash this region's manager: its table is lost and must be rebuilt">Crash manager M${mgr.id}</button></div>`;
+        <div class="ins-actions">
+          <button class="ghost danger" data-act="crashmgr" data-id="${mgr.id}" title="Crash this region's manager: its table is lost and must be rebuilt">Crash manager M${mgr.id}</button>
+          <button class="ghost danger" data-act="cutnet" data-x="${xOf(cell)}" data-y="${yOf(cell)}" title="Cut every robot in the 5×5 cells around here off the network for 8 s">Cut network here</button>
+        </div>`;
     }
     const ownerBtn = (id) => (id >= 0 ? `<button class="linkish" data-act="robot" data-id="${id}">R${id}</button>` : '—');
     const L = sim.layout;
@@ -398,8 +419,14 @@ export class Hud {
     const { sim, ctx } = this.app;
     if (!ctx) return;
     let moved = false;
-    while (ctx.step < sc.steps.length - 1 && sc.steps[ctx.step].done(sim, ctx)) {
+    while (ctx.step < sc.steps.length - 1) {
+      const st = sc.steps[ctx.step];
+      // Some steps stay up a minimum time so they can be read.
+      if (st.dwell && sim.tick - ctx.shownAt < st.dwell) break;
+      if (!st.done(sim, ctx)) break;
       ctx.step++;
+      ctx.shownAt = sim.tick;
+      this.app.history.stepAt[ctx.step] = sim.tick;
       moved = true;
     }
     if (moved) this.setStep(sc, ctx.step);

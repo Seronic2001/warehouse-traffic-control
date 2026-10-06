@@ -48,7 +48,7 @@ const LIGHT = {
   events: {
     deadlock: '#e11d48', fenced: '#be123c', blocked: '#d97706', regrant: '#0891b2', expired: '#94a3b8', cleared: '#16a34a',
     respawn: '#16a34a', crash: '#ea580c', pause: '#3b82f6', collision: '#e11d48',
-    mgrdown: '#e11d48', mgrrestart: '#7c3aed', reconciled: '#16a34a',
+    mgrdown: '#e11d48', mgrrestart: '#7c3aed', reconciled: '#16a34a', partition: '#e11d48', healed: '#16a34a',
   },
   mgrState: { down: '#e11d48', reconciling: '#7c3aed' },
   series: { baseline: '#2a78d6', detect: '#eb6834', ordered: '#1baf7a' },
@@ -102,7 +102,7 @@ const DARK = {
   events: {
     deadlock: '#f87171', fenced: '#fb7185', blocked: '#fbbf24', regrant: '#38bdf8', expired: '#7a818c', cleared: '#4ade80',
     respawn: '#4ade80', crash: '#fb923c', pause: '#93c5fd', collision: '#f87171',
-    mgrdown: '#f87171', mgrrestart: '#a78bfa', reconciled: '#4ade80',
+    mgrdown: '#f87171', mgrrestart: '#a78bfa', reconciled: '#4ade80', partition: '#f87171', healed: '#4ade80',
   },
   mgrState: { down: '#f87171', reconciling: '#a78bfa' },
   series: { baseline: '#3987e5', detect: '#d95926', ordered: '#199e70' },

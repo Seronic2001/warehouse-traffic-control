@@ -16,6 +16,9 @@ const MARGINS = [0, 4, 8, 12, 16, 24, 32]; // ticks
 const HOSTILE = { mode: 'detect', robots: 120, loss: 0.2, delayMin: 1, delayMax: 6, clockDrift: 0.2, leaseTicks: 40, renewEvery: 10 };
 const MARGIN_SEEDS = [1, 2];
 const FAIL_TICKS = 3600; // 3 minutes, a failure every 15 s
+const POOL_MAX = 8;
+const CONG_TICKS = 12000; // 10 minutes: congestion builds up slowly
+const CONG_DENSITIES = [100, 150, 200]; // workers; one core is always left for the page
 
 const DENSITY_METRICS = [
   { key: 'collisionsPer1k', title: 'Collisions per 1,000 moves', note: 'Both protocols must stay at 0', fmt: (v) => v.toFixed(1) },
@@ -48,7 +51,8 @@ export class Bench {
       $('bench-table-btn').textContent = t.hidden ? 'Table' : 'Charts';
       $('bench-grid').hidden = !t.hidden;
     });
-    $('bench-dur').textContent = 'a minute or two';
+    const cores = Math.max(1, Math.min(POOL_MAX, (navigator.hardwareConcurrency || 2) - 1));
+    $('bench-dur').textContent = cores > 5 ? `about 25 seconds on ${cores} CPU cores` : cores > 1 ? `under a minute on ${cores} CPU cores` : 'about two minutes';
     this.refresh();
   }
 
@@ -75,37 +79,56 @@ export class Bench {
     for (const n of DENSITIES) for (const mode of MODES) jobs.push({ id: `A:${mode}:${n}`, cfg: { ...base, mode, robots: n }, ticks: SWEEP_A_TICKS });
     for (const m of MARGINS) for (const seed of MARGIN_SEEDS) jobs.push({ id: `B:${m}:${seed}`, cfg: { ...base, ...HOSTILE, safetyMargin: m, seed }, ticks: SWEEP_A_TICKS });
     for (const mode of PROTOCOLS) jobs.push({ id: `C:${mode}`, cfg: { ...base, mode, robots: 120, injectFailures: true }, ticks: FAIL_TICKS });
+    for (const n of CONG_DENSITIES) for (const on of [true, false]) jobs.push({ id: `D:${on ? 'on' : 'off'}:${n}`, cfg: { ...base, mode: 'detect', robots: n, congestion: on }, ticks: CONG_TICKS });
     return jobs;
   }
 
+  // Runs the jobs on a pool of workers, one per spare CPU core. Each worker
+  // takes the next job as soon as it finishes one; the biggest jobs go first
+  // so no core is left with a long run at the end.
   run() {
-    if (this.worker) this.worker.terminate();
+    this.stop();
     this.results = new Map();
     this.draw();
     $('bench-run').disabled = true;
     const prog = $('bench-progress');
     prog.hidden = false;
     prog.querySelector('div').style.width = '0%';
-    prog.querySelector('span').textContent = 'Starting…';
-    const jobs = this.jobs();
-    this.worker = new Worker(new URL('../sim/bench.worker.js', import.meta.url), { type: 'module' });
-    this.worker.onmessage = (e) => {
-      const m = e.data;
-      if (m.type === 'result') {
-        this.results.set(m.id, m.summary);
-        prog.querySelector('div').style.width = `${(m.done / m.total) * 100}%`;
-        prog.querySelector('span').textContent = `${m.done} / ${m.total} runs`;
-        this.draw();
-      } else if (m.type === 'done') {
-        prog.querySelector('span').textContent = `Done · seed ${this.app.cfg.seed}, ${jobs.length} runs`;
-        $('bench-run').disabled = false;
-        $('bench-run').textContent = 'Run again';
-        $('bench-table-btn').disabled = false;
-        this.worker.terminate();
-        this.worker = null;
-      }
+    const jobs = this.jobs().sort((a, b) => b.ticks * b.cfg.robots - a.ticks * a.cfg.robots);
+    const cores = Math.max(1, Math.min(POOL_MAX, (navigator.hardwareConcurrency || 2) - 1, jobs.length));
+    prog.querySelector('span').textContent = `Starting ${cores} worker${cores === 1 ? '' : 's'}…`;
+    const t0 = performance.now();
+    let next = 0;
+    let done = 0;
+    this.pool = [];
+    const feed = (w) => {
+      if (next < jobs.length) w.postMessage({ job: jobs[next++] });
     };
-    this.worker.postMessage({ jobs });
+    for (let i = 0; i < cores; i++) {
+      const w = new Worker(new URL('../sim/bench.worker.js', import.meta.url), { type: 'module' });
+      w.onmessage = (e) => {
+        this.results.set(e.data.id, e.data.summary);
+        done++;
+        prog.querySelector('div').style.width = `${(done / jobs.length) * 100}%`;
+        prog.querySelector('span').textContent = `${done} / ${jobs.length} runs · ${cores} worker${cores === 1 ? '' : 's'}`;
+        this.draw();
+        if (done === jobs.length) {
+          const secs = ((performance.now() - t0) / 1000).toFixed(0);
+          prog.querySelector('span').textContent = `Done · seed ${this.app.cfg.seed}, ${jobs.length} runs on ${cores} worker${cores === 1 ? '' : 's'} in ${secs}s`;
+          $('bench-run').disabled = false;
+          $('bench-run').textContent = 'Run again';
+          $('bench-table-btn').disabled = false;
+          this.stop();
+        } else feed(w);
+      };
+      this.pool.push(w);
+      feed(w);
+    }
+  }
+
+  stop() {
+    for (const w of this.pool || []) w.terminate();
+    this.pool = [];
   }
 
   // Sweep A value for a mode/density.
@@ -123,7 +146,7 @@ export class Bench {
   draw() {
     const grid = $('bench-grid');
     if (!this.results.size) {
-      grid.innerHTML = `<div class="bench-empty">Run the sweeps to compare strategies across 50 to 200 robots, measure the effect of the lease safety margin, and time recovery after crashes, pauses and manager failures.</div>`;
+      grid.innerHTML = `<div class="bench-empty">Run the sweeps to compare strategies across 50 to 200 robots, measure the effect of the lease safety margin, time recovery after crashes, pauses and manager failures, and test congestion control over 10-minute runs.</div>`;
       $('bench-table').innerHTML = '';
       return;
     }
@@ -180,6 +203,21 @@ export class Bench {
       ),
     );
     grid.appendChild(this.recoveryCard());
+
+    // ── D ──
+    const muted = getComputedStyle(document.documentElement).getPropertyValue('--muted').trim();
+    const on = { label: 'Congestion control on', color: MODE_SERIES.detect.hex };
+    const off = { label: 'Congestion control off', color: muted };
+    grid.appendChild(
+      section(
+        'Congestion control over the long run',
+        `Leases + detection, ${(CONG_TICKS * TICK_S) / 60} minutes per run. Managers gossip their region's load; robots route around crowded regions and don't take jobs in full ones. <span class="sec-key"><i style="background:${on.color}"></i>on <i style="background:${off.color}"></i>off</span>`,
+      ),
+    );
+    const d = (k, n, key) => this.results.get(`D:${k}:${n}`)?.[key] ?? null;
+    const perMin = (k, n) => (d(k, n, 'tasks') == null ? null : d(k, n, 'tasks') / ((CONG_TICKS * TICK_S) / 60));
+    grid.appendChild(lineChart({ title: 'Average throughput, whole run', note: 'Tasks completed per minute over all 10 minutes', xs: CONG_DENSITIES, xFmt: (n) => `${n}`, xName: 'robots', fmt: (v) => v.toFixed(0), series: [{ ...on, values: CONG_DENSITIES.map((n) => perMin('on', n)) }, { ...off, values: CONG_DENSITIES.map((n) => perMin('off', n)) }] }));
+    grid.appendChild(lineChart({ title: 'Throughput in the final minute', note: 'Without control, queues build up and throughput sags late in the run', xs: CONG_DENSITIES, xFmt: (n) => `${n}`, xName: 'robots', fmt: (v) => v.toFixed(0), series: [{ ...on, values: CONG_DENSITIES.map((n) => d('on', n, 'throughput')) }, { ...off, values: CONG_DENSITIES.map((n) => d('off', n, 'throughput')) }] }));
     this.table();
   }
 
@@ -228,6 +266,12 @@ export class Bench {
         return `<td>${r ? fmt(r.recovery[row.key], (v) => `${v.toFixed(2)} s (${r.recoveryCounts[row.key]}×)`) : '—'}</td>`;
       }).join('')}</tr>`;
     }
+    html += `</table><h4>Congestion control (${(CONG_TICKS * TICK_S) / 60} minutes)</h4><table><tr><th>Robots</th><th>Control</th><th>Tasks</th><th>Tasks / min, whole run</th><th>Tasks / min, final minute</th><th>Collisions</th></tr>`;
+    for (const n of CONG_DENSITIES)
+      for (const k of ['on', 'off']) {
+        const r = this.results.get(`D:${k}:${n}`);
+        if (r) html += `<tr><td>${n}</td><td>${k}</td><td>${r.tasks}</td><td>${(r.tasks / ((CONG_TICKS * TICK_S) / 60)).toFixed(0)}</td><td>${r.throughput.toFixed(0)}</td><td>${r.collisions}</td></tr>`;
+      }
     $('bench-table').innerHTML = html + '</table>';
   }
 }

@@ -51,7 +51,7 @@ export class LiveView {
     this.managers = managers;
     this.group = new THREE.Group();
     scene.add(this.group);
-    this.layers = { reservations: true, waits: true, network: false, managers: true, labels: true };
+    this.layers = { reservations: true, waits: true, network: false, managers: true, labels: true, load: false };
     this.selected = -1;
     this.selectedCell = -1;
     this.focusRobots = new Set();
@@ -74,6 +74,8 @@ export class LiveView {
     this.buildArcs(resolution);
     this.buildFx();
     this.buildTourFx();
+    this.buildZones();
+    this.buildLoad();
     this.applyTheme();
   }
 
@@ -168,6 +170,79 @@ export class LiveView {
     }
   }
 
+  // Network partitions: a hatched red patch per dead zone.
+  buildZones() {
+    this.zoneMeshes = [];
+    for (let i = 0; i < 6; i++) {
+      const mesh = new THREE.Mesh(
+        new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2),
+        new THREE.MeshBasicMaterial({ map: hatchTexture(), transparent: true, opacity: 0.5, depthWrite: false }),
+      );
+      mesh.renderOrder = 1;
+      mesh.visible = false;
+      const edge = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2)), new THREE.LineBasicMaterial({ transparent: true }));
+      edge.position.y = 0.01;
+      mesh.add(edge);
+      this.group.add(mesh);
+      this.zoneMeshes.push(mesh);
+    }
+  }
+
+  // Region load: each region tinted by how full its manager says it is.
+  buildLoad() {
+    this.loadPlanes = [];
+    for (let id = 0; id < 16; id++) {
+      const i = id % 4, j = (id / 4) | 0;
+      const mesh = new THREE.Mesh(
+        new THREE.PlaneGeometry(12 - 0.3, 8 - 0.3).rotateX(-Math.PI / 2),
+        new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false }),
+      );
+      mesh.position.set(wx(i * 12 + 5.5), 0.025, wz(j * 8 + 3.5));
+      mesh.renderOrder = 1;
+      mesh.visible = false;
+      const edge = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.PlaneGeometry(12 - 0.3, 8 - 0.3).rotateX(-Math.PI / 2)), new THREE.LineBasicMaterial({ transparent: true }));
+      edge.position.y = 0.01;
+      mesh.add(edge);
+      this.group.add(mesh);
+      this.loadPlanes.push(mesh);
+    }
+  }
+
+  updateLoad() {
+    const sim = this.sim;
+    const on = this.layers.load && sim.mode !== 'baseline';
+    const hex = theme.status.wait;
+    for (const mesh of this.loadPlanes) {
+      const mgr = sim.managers[this.loadPlanes.indexOf(mesh)];
+      mesh.visible = on && mgr.state === 'UP';
+      if (!mesh.visible) continue;
+      const u = mgr.owned.size / mgr.cap;
+      const full = u >= sim.cfg.admitBelow;
+      mesh.material.color.set(hex);
+      mesh.material.opacity = Math.min(0.6, Math.max(0, (u - 0.05) / 0.35) * 0.6);
+      mesh.children[0].material.color.set(hex);
+      mesh.children[0].material.opacity = full ? 0.9 : 0;
+    }
+  }
+
+  updateZones(now) {
+    const sim = this.sim;
+    const hex = theme.mgrState.down;
+    const blink = (Math.sin(now * 0.005) + 1) / 2;
+    this.zoneMeshes.forEach((mesh, i) => {
+      const z = sim.deadZones[i];
+      mesh.visible = !!z;
+      if (!z) return;
+      const w = z.x1 - z.x0 + 1, d = z.y1 - z.y0 + 1;
+      mesh.scale.set(w, 1, d);
+      mesh.material.map.repeat.set(w, d);
+      mesh.position.set(wx((z.x0 + z.x1) / 2), 0.05, wz((z.y0 + z.y1) / 2));
+      mesh.material.color.set(hex);
+      mesh.material.opacity = 0.45 + blink * 0.25;
+      mesh.children[0].material.color.set(hex);
+    });
+  }
+
   kept(id) {
     return !this.spot || this.spot.robots !== 'dim' || (this.spot.keep && this.spot.keep.has(id));
   }
@@ -188,6 +263,17 @@ export class LiveView {
     this.selected = -1;
     this.selectedCell = -1;
     this.buildRobots(sim.robots.length);
+  }
+
+  // Same run, different moment (after a rewind): keep the selection and
+  // don't replay the effects of events that already happened.
+  adoptSim(sim) {
+    this.sim = sim;
+    this.lastSeq = sim.eventSeq;
+    for (const b of sim.bursts) this.seenBursts.add(b);
+    for (const c of this.callouts) c.obj.removeFromParent();
+    this.callouts = [];
+    if (this.robotMeshes && this.rm.body.count !== sim.robots.length) this.buildRobots(sim.robots.length);
   }
 
   buildRobots(n) {
@@ -339,6 +425,8 @@ export class LiveView {
     this.updateMessages(t, now);
     this.updateBursts(now);
     this.updateManagers(now);
+    this.updateZones(now);
+    this.updateLoad();
     this.updateEvents(now);
     this.updateBeacons(now);
     this.updateLabels(t, now);
@@ -787,6 +875,8 @@ export class LiveView {
         case 'crash': text = `<b>R${e.robots[0]} CRASHED</b>`; break;
         case 'pause': text = `<b>R${e.robots[0]} FROZE</b>`; break;
         case 'regrant': text = `<b>RE-GRANTED</b> to R${e.robots[1]}`; break;
+        case 'partition': text = `<b>NETWORK CUT</b> robots inside are offline`; break;
+        case 'healed': text = `<b>NETWORK HEALED</b>`; break;
         case 'collision': text = `<b>COLLISION</b>`; break;
         case 'mgrdown':
         case 'mgrrestart':
@@ -886,9 +976,14 @@ export class LiveView {
         const mgr = sim.managers[node.id];
         if (this.spot?.managers === 'dim') continue;
         const st = mgr.state === 'DOWN' ? ' down' : mgr.state === 'RECONCILING' ? ' recon' : '';
-        const txt = mgr.state === 'DOWN' ? `M${node.id} · DOWN` : mgr.state === 'RECONCILING' ? `M${node.id} · reconciling ${mgr.reports?.size ?? 0}/${sim.robots.filter((r) => r.alive).length}` : `M${node.id}`;
+        const load = this.layers.load && sim.mode !== 'baseline' ? `<small>${Math.round((mgr.owned.size / mgr.cap) * 100)}%</small>` : '';
+        const txt = mgr.state === 'DOWN' ? `M${node.id} · DOWN` : mgr.state === 'RECONCILING' ? `M${node.id} · reconciling ${mgr.reports?.size ?? 0}/${sim.robots.filter((r) => r.alive).length}` : `M${node.id}${load}`;
         this.label('m' + node.id, `mlabel${this.spot?.managers === 'hi' ? ' hi' : ''}${st}`, txt, node.pos.x, node.group.position.y + 0.45, node.pos.z);
       }
+    }
+    for (const z of sim.deadZones) {
+      const left = ((z.until - sim.tick) * sim.cfg.tickMs) / 1000;
+      this.label(`z${z.from}:${z.x0}:${z.y0}`, 'zlabel', `<i></i>NO NETWORK · ${left.toFixed(1)}s`, wx((z.x0 + z.x1) / 2), 0.05, wz(z.y0) - 0.5);
     }
     if (this.showRegions) {
       const only = this.showRegions.only;
@@ -965,6 +1060,28 @@ function softSquareTexture() {
   g.stroke();
   const t = new THREE.CanvasTexture(cv);
   t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+// Diagonal hatching for dead zones, tinted by the material colour.
+function hatchTexture() {
+  const s = 64;
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = s;
+  const g = cv.getContext('2d');
+  g.fillStyle = 'rgba(255,255,255,0.35)';
+  g.fillRect(0, 0, s, s);
+  g.strokeStyle = 'rgba(255,255,255,1)';
+  g.lineWidth = 7;
+  for (let k = -s; k < s * 2; k += 22) {
+    g.beginPath();
+    g.moveTo(k, 0);
+    g.lineTo(k + s, s);
+    g.stroke();
+  }
+  const t = new THREE.CanvasTexture(cv);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
   return t;
 }
 

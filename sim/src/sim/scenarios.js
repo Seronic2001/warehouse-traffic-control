@@ -14,6 +14,16 @@ function nearestPickup(x, y) {
   return best;
 }
 
+function nearestStation(x, y) {
+  const L = getLayout();
+  let best = L.stations[0], bd = Infinity;
+  for (const c of L.stations) {
+    const d = Math.abs(xOf(c) - x) + Math.abs(yOf(c) - y);
+    if (d < bd) (bd = d), (best = c);
+  }
+  return best;
+}
+
 function neighborhood(cx, cy, r) {
   const out = [];
   for (let y = cy - r; y <= cy + r; y++)
@@ -138,6 +148,50 @@ export const SCENARIOS = {
         done: (sim, ctx) => since(sim, ctx, 'rejoined'),
       },
       { text: 'R0 resynchronised. The world checked where it really is, gave it back its blocked cell with a fresh epoch, and R0 carried on.', done: () => false },
+    ],
+  },
+
+  partition: {
+    title: 'Network partition',
+    focus: { x: 32, y: 23, dist: 13 },
+    cfg: { mode: 'detect', maxBackground: 70 },
+    labels: [0, 1],
+    keepClear: neighborhood(32, 23, 3),
+    // Same plain westbound lane as the crash scenario. R0 is finishing a pick
+    // and has already reserved the cell it will pull out into (30,23). A dead
+    // zone then cuts it off; R1 is outside the zone, waiting for that cell.
+    setup(sim) {
+      const r0 = sim.addRobot(cellOf(31, 23));
+      r0.basePrio = 2;
+      r0.heading = -Math.PI / 2;
+      r0.task = { stage: 'pickup', pickup: cellOf(31, 23), dropoff: nearestStation(0, 23) };
+      r0.workLeft = 50;
+      r0.state = 'WORK';
+      preGrant(sim, r0, cellOf(30, 23));
+      stage(sim, 30, 22, 30, 23, nearestPickup(22, 28), 2);
+    },
+    onTick(sim) {
+      if (sim.tick === 4) sim.cutNetwork(33, 23, 2, 160);
+    },
+    steps: [
+      {
+        text: 'A <b>Wi-Fi dead zone</b> (red) cuts every robot inside it off from the network. <b>R0</b> is inside, finishing a pick. It already holds a lease on the cell it will pull out into, and <b>R1</b> is queued for that same cell.',
+        done: (sim) => sim.robots[0].lastHold > 0,
+      },
+      {
+        text: 'R0 finished its pick, but its renewals never got through. By <b>its own clock</b> the lease is about to run out, so it <b>refuses to move</b>, even though no one has told it the cell is gone. Watch the cell ahead of it.',
+        dwell: 50, // ticks: the re-grant follows half a second later
+        done: (sim, ctx) => since(sim, ctx, 'regrant'),
+      },
+      {
+        text: 'A moment later the manager\'s copy of the lease expired too. To the manager, R0 looks exactly like a crashed robot: the empty cell went to <b>R1</b> with a higher epoch, and R0\'s own cell is <b>Blocked</b> because R0 is still inside.',
+        done: (sim, ctx) => since(sim, ctx, 'healed'),
+      },
+      {
+        text: 'The network healed. R0\'s renewals come back <b>lost</b>, so it drops its stale leases and asks the world to confirm where it is.',
+        done: (sim, ctx) => since(sim, ctx, 'rejoined'),
+      },
+      { text: 'R0 got its own cell back with a fresh epoch and carries on. Nobody entered a cell without a valid lease, before, during or after the partition.', done: () => false },
     ],
   },
 

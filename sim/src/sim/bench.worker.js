@@ -1,12 +1,10 @@
-// Runs benchmark jobs headless, off the main thread.
+// Runs one benchmark job at a time, headless, off the main thread. The page
+// keeps a pool of these workers and hands each a new job when it finishes.
 import { Simulation } from './simulation.js';
 
 self.onmessage = (e) => {
-  const { jobs } = e.data;
-  jobs.forEach((job, i) => {
-    const sim = new Simulation(job.cfg);
-    for (let t = 0; t < job.ticks; t++) sim.step();
-    self.postMessage({ type: 'result', id: job.id, summary: sim.summary(), done: i + 1, total: jobs.length });
-  });
-  self.postMessage({ type: 'done' });
+  const { job } = e.data;
+  const sim = new Simulation(job.cfg);
+  for (let t = 0; t < job.ticks; t++) sim.step();
+  self.postMessage({ type: 'result', id: job.id, summary: sim.summary() });
 };

@@ -110,6 +110,9 @@
             <button id="btn-dice" class="ghost" title="Random seed">⚄</button>
           </div>
         </div>
+        <div class="toggles">
+          <label title="Managers gossip their region's load; robots route around crowded regions and don't take jobs in full ones"><input type="checkbox" id="in-congestion" checked /><i class="sw"></i>Congestion control</label>
+        </div>
 
         <div class="sep"></div>
         <div class="panel-sub">Layers</div>
@@ -117,6 +120,7 @@
           <label><input type="checkbox" data-layer="reservations" checked /><i class="sw"></i>Lease reservations</label>
           <label><input type="checkbox" data-layer="waits" checked /><i class="sw"></i>Wait-for graph &amp; probes</label>
           <label><input type="checkbox" data-layer="managers" checked /><i class="sw"></i>Region managers</label>
+          <label><input type="checkbox" data-layer="load" /><i class="sw"></i>Region load</label>
           <label><input type="checkbox" data-layer="network" /><i class="sw"></i>All network messages</label>
           <label><input type="checkbox" data-layer="labels" checked /><i class="sw"></i>Labels</label>
         </div>
@@ -195,11 +199,41 @@
         <span class="num">4</span>
         <span class="txt"><b>Manager crash</b><small>table lost → reconciled</small></span>
       </button>
+      <button class="scn" data-scenario="partition">
+        <span class="num">5</span>
+        <span class="txt"><b>Network partition</b><small>cut off → stop → resync</small></span>
+      </button>
       <button class="scn bench" id="btn-bench">
         <span class="num">B</span>
         <span class="txt"><b>Benchmark</b><small>compare all three modes</small></span>
       </button>
     </nav>
+
+    <!-- ── Replay scrubber ── -->
+    <div class="scrub" id="scrub">
+      <button class="sbtn" id="scrub-back" title="Back 5 seconds ([)">−5s</button>
+      <div class="scrub-wrap">
+        <canvas id="scrub-canvas" aria-label="Replay position"></canvas>
+        <div class="tip scrub-tip" id="scrub-tip" hidden></div>
+      </div>
+      <button class="sbtn" id="scrub-fwd" title="Forward 5 seconds (])">+5s</button>
+      <span class="scrub-time" id="scrub-time"></span>
+      <button class="sbtn live" id="scrub-live" title="Jump to the latest moment">Live</button>
+    </div>
+
+    <!-- ── Message timeline ── -->
+    <section class="panel timeline" id="timeline" hidden>
+      <div class="tl-head">
+        <span class="tl-title">Message timeline <b id="tl-robot">—</b></span>
+        <div class="tl-groups" id="tl-groups"></div>
+        <div class="tl-windows" id="tl-windows" role="group" aria-label="Time window"></div>
+        <button class="collapse" id="tl-close" title="Close (Esc)">×</button>
+      </div>
+      <div class="tl-body">
+        <canvas id="tl-canvas"></canvas>
+        <div class="tip tl-tip" id="tl-tip" hidden></div>
+      </div>
+    </section>
 
     <div class="hint" id="hint">Drag to orbit · scroll to zoom · right-drag to pan · click a robot or a cell to inspect it</div>
 
@@ -225,7 +259,7 @@
         <div class="modal-head">
           <div>
             <h2>Evaluation sweep</h2>
-            <p>Three sweeps run in a background worker: strategies vs density, the lease safety margin, and recovery after failures. Each run uses a fixed seed, so the results can be replayed exactly. It takes <b id="bench-dur">a minute or two</b>.</p>
+            <p>Four sweeps run in background workers, spread across your CPU cores: strategies vs density, the lease safety margin, recovery after failures, and congestion control. Each run uses a fixed seed, so the results can be replayed exactly. It takes <b id="bench-dur">a minute or two</b>.</p>
           </div>
           <div class="modal-actions">
             <button id="bench-table-btn" class="ghost" disabled>Table</button>

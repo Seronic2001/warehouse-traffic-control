@@ -1,7 +1,7 @@
 // A* over the grid. Search states are (cell, arrival direction, turned) so
 // turns can carry a small cost (clean straight runs, like real AGVs) and two
 // consecutive turns inside a crossing box — a U-turn — can be forbidden.
-import { W, H, getLayout } from './layout.js';
+import { W, H, RW, RH, RX, getLayout } from './layout.js';
 
 const DX = [1, 0, -1, 0];
 const DY = [0, 1, 0, -1];
@@ -58,8 +58,9 @@ function pop() {
  * (ending at goal), or null if unreachable.
  * `avoid(cell)` returning true makes a cell impassable for this search.
  * With `strict`, one-way lanes are hard rules instead of a penalty.
+ * `regionCost[r]`, if given, is added for every step into region r.
  */
-export function astar(start, goal, avoid, strict = true) {
+export function astar(start, goal, avoid, strict = true, regionCost = null) {
   if (start === goal) return [];
   const L = getLayout();
   stamp++;
@@ -104,6 +105,7 @@ export function astar(start, goal, avoid, strict = true) {
         cost += WRONG_WAY_COST;
       }
       if (L.bay[n] && n !== goal) cost += STATION_COST;
+      if (regionCost) cost += regionCost[((ny / RH) | 0) * RX + ((nx / RW) | 0)];
       const ns = n * 10 + d * 2 + (turn && L.box[n] ? 1 : 0);
       const ng = g[s] + cost;
       if (seen[ns] === stamp && g[ns] <= ng) continue;

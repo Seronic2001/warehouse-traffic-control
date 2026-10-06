@@ -15,6 +15,10 @@ import { LiveView } from './render/live.js';
 import { Hud } from './ui/hud.js';
 import { Bench } from './ui/bench.js';
 import { Tour } from './ui/tour.js';
+import { Scrubber } from './ui/scrubber.js';
+import { Timeline } from './ui/timeline.js';
+import { History } from './sim/history.js';
+import { Trace } from './sim/trace.js';
 import { theme, setThemeMode, onThemeChange } from './render/theme.js';
 
 const layout = getLayout();
@@ -101,6 +105,9 @@ const tour = new Tour(app);
 app.tour = tour;
 if (import.meta.env.DEV) window.__app = app;
 const bench = new Bench(app);
+const scrubber = new Scrubber(app);
+const timeline = new Timeline(app);
+app.timeline = timeline;
 let acc = 0;
 
 app.restart = () => {
@@ -111,13 +118,52 @@ app.restart = () => {
 app.attach = (sim) => {
   app.sim = sim;
   sim.net.record = true;
+  sim.trace = new Trace();
+  app.history = new History(sim);
   acc = 0;
   live.setSim(sim);
   live.focusRobots = new Set(app.scenario ? SCENARIOS[app.scenario].labels : []);
   app.follow = false;
   hud.onSim(sim);
+  scrubber.onSim();
 };
 
+// One tick, through history so recorded actions replay and checkpoints are kept.
+app.step = () => app.history.step(app.sim);
+
+// A user action on the simulation (crash, freeze, cut the network…). Going
+// through history makes it part of the replayable record.
+app.act = (name, ...args) => {
+  const out = app.history.act(app.sim, name, args);
+  scrubber.onHistory();
+  return out;
+};
+
+// Jump to an earlier (or later, up to the furthest point reached) moment.
+// With the message timeline open, a few extra seconds are replayed first so
+// it has history to show; `fast` (while dragging) skips that.
+app.seek = (tick, fast = false) => {
+  const h = app.history;
+  const sim = h.seek(tick, {
+    warm: fast || !timeline.open ? 0 : 160,
+    prepare: (s) => {
+      s.net.record = true;
+      s.trace = new Trace();
+    },
+  });
+  app.sim = sim;
+  acc = 0;
+  live.adoptSim(sim);
+  if (app.scenario && app.ctx) {
+    let k = 0;
+    while (k + 1 < h.stepAt.length && h.stepAt[k + 1] <= sim.tick) k++;
+    app.ctx.step = k;
+    app.ctx.shownAt = h.stepAt[k];
+    hud.setStep(SCENARIOS[app.scenario], k);
+  }
+  hud.onSeek(sim);
+  scrubber.onHistory();
+};
 app.setMode = (mode) => {
   app.cfg.mode = mode;
   if (app.tour?.active) app.tour.end();
@@ -130,7 +176,7 @@ app.startScenario = (key, opts = {}) => {
   const { maxBackground, ...over } = sc.cfg;
   const cfg = { ...app.cfg, ...over, robots: Math.min(app.cfg.robots, maxBackground ?? 999) };
   app.scenario = key;
-  app.ctx = { start: 0, step: 0 };
+  app.ctx = { start: 0, step: 0, shownAt: 0 };
   app.attach(new Simulation(cfg, sc));
   if (opts.silent) return;
   if (tour.active) tour.end();
@@ -248,12 +294,13 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'Space') {
     e.preventDefault();
     app.togglePlay();
-  } else if (tour.active && ['1', '2', '3', '4', 'b', 'B', 'r', 'R'].includes(e.key)) {
+  } else if (tour.active && ['1', '2', '3', '4', '5', 'b', 'B', 'r', 'R'].includes(e.key)) {
     return;
   } else if (e.key === '1') app.startScenario('deadlock');
   else if (e.key === '2') app.startScenario('crash');
   else if (e.key === '3') app.startScenario('pause');
   else if (e.key === '4') app.startScenario('manager');
+  else if (e.key === '5') app.startScenario('partition');
   else if (e.key === 'b' || e.key === 'B') bench.open();
   else if (e.key === 't' || e.key === 'T') tour.active ? tour.end() : tour.start();
   else if (e.key === 'd' || e.key === 'D') app.toggleTheme();
@@ -266,12 +313,15 @@ window.addEventListener('keydown', (e) => {
   } else if (e.key === 'Escape') {
     if (tour.active) tour.end();
     else if (bench.isOpen) bench.close();
+    else if (timeline.open) timeline.close();
     else if (live.selected >= 0 || live.selectedCell >= 0) app.select(-1);
     else if (app.scenario) app.exitScenario();
   } else if (e.key === '.') {
     // single-step while paused
-    if (!app.running) app.sim.step();
-  }
+    if (!app.running) app.step();
+  } else if (e.key === '[' && !tour.active) app.seek(app.sim.tick - 100);
+  else if (e.key === ']' && !tour.active) app.seek(app.sim.tick + 100);
+  else if ((e.key === 'm' || e.key === 'M') && !tour.active) timeline.toggle();
 });
 
 // ───────────────────────────── resize ─────────────────────────────
@@ -300,22 +350,24 @@ function frame(now) {
   last = now;
   const sim = app.sim;
   const tickMs = sim.cfg.tickMs;
-  if (app.running) {
+  if (app.running && !app.scrubbing) {
     acc += dt * 1000 * app.speed;
     let n = 0;
     while (acc >= tickMs && n < 16) {
-      sim.step();
+      app.history.step(sim);
       acc -= tickMs;
       n++;
     }
     if (n === 16) acc = 0;
-    if (app.scenario) hud.checkScenario(SCENARIOS[app.scenario]);
   }
+  if (app.scenario) hud.checkScenario(SCENARIOS[app.scenario]);
   sim.net.pruneFlights(sim.tick);
   const t = sim.tick + Math.min(acc / tickMs, 0.999);
   live.update(t, now, dt);
   warehouse.tickDim();
   tour.update(now);
+  scrubber.update();
+  timeline.update(t);
 
   if (app.follow && live.selected >= 0) {
     const [x, y] = live.robotPos(live.selected);
@@ -362,6 +414,8 @@ onThemeChange(() => {
   hud.buildLegend();
   tour.refresh();
   bench.refresh();
+  timeline.refresh();
+  scrubber.refresh();
 });
 app.toggleTheme = () => {
   const next = theme.mode === 'dark' ? 'light' : 'dark';

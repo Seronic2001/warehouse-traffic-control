@@ -2,7 +2,9 @@
 // through network messages (to region managers and other robots) and through
 // the world simulator's actuator (tryMove), which enforces fencing.
 import { astar } from './astar.js';
-import { regionOf, fmtCell, xOf, yOf } from './layout.js';
+import { regionOf, fmtCell, xOf, yOf, cellOf, W, H } from './layout.js';
+
+const URGENT_RENEW_GAP = 4; // ticks
 
 export class Robot {
   constructor(sim, id, cell) {
@@ -15,6 +17,38 @@ export class Robot {
     // A positive drift makes it believe its leases last longer than they do,
     // which is exactly what the safety margin has to absorb.
     this.drift = sim.cfg.clockDrift ? (sim.rng.float() * 2 - 1) * sim.cfg.clockDrift : 0;
+    // This robot's (possibly stale) view of every region's load, picked up
+    // from the managers' replies.
+    this.loads = new Array(16).fill(0);
+    this.loadStamp = new Array(16).fill(-1);
+  }
+
+  mergeLoads(view) {
+    for (let i = 0; i < view.util.length; i++) {
+      if (view.stamp[i] > this.loadStamp[i]) {
+        this.loads[i] = view.util[i];
+        this.loadStamp[i] = view.stamp[i];
+      }
+    }
+  }
+
+  // Extra planning cost per step into each region: zero until a region is
+  // crowded, then growing with its load. Views older than 20 s are ignored.
+  regionCost() {
+    const cfg = this.sim.cfg;
+    if (!cfg.congestion) return null;
+    const t = this.sim.tick;
+    const cost = new Float32Array(16);
+    for (let i = 0; i < 16; i++) {
+      if (this.loadStamp[i] < 0 || t - this.loadStamp[i] > 400) continue;
+      cost[i] = Math.max(0, this.loads[i] - cfg.crowdedAt) * cfg.detourWeight;
+    }
+    return cost;
+  }
+
+  loadOf(cell) {
+    const r = regionOf(cell);
+    return this.loadStamp[r] < 0 || this.sim.tick - this.loadStamp[r] > 400 ? 0 : this.loads[r];
   }
 
   // When this robot believes a lease that started at `start` runs out.
@@ -52,6 +86,8 @@ export class Robot {
     this.lastRenew = sim.tick - sim.rng.int(sim.cfg.renewEvery);
     this.renewSoon = false;
     this.lastRejoin = -1e9;
+    this.lastHold = -1e9;
+    this.renewSince = null; // first renewal still waiting for an answer // last tick a move was refused for lack of lease time
     this.motion = null;
     this.crashTick = 0;
   }
@@ -158,6 +194,7 @@ export class Robot {
     if (lease.expiry - t < cfg.safetyMargin + cfg.moveTicks) {
       // Too close to expiry to start a move safely: renew first.
       this.renewSoon = true;
+      this.lastHold = t;
       return;
     }
     this.clearWaiting();
@@ -248,7 +285,14 @@ export class Robot {
     if (this.waitingFor < 0 || t - this.waitSince < cfg.probeAfter || t - this.lastProbe < cfg.probeEvery) return;
     this.lastProbe = t;
     this.sim.metrics.probes++;
-    this.send('r' + this.waitingFor, { type: 'PROBE', initiator: this.id, path: [this.id], alts: [this.hasAlternative()] });
+    this.send('r' + this.waitingFor, { type: 'PROBE', initiator: this.id, path: [this.id], alts: [this.hasAlternative()], rel: [], wants: this.waitCell });
+  }
+
+  // Would yielding actually free `cell` (the cell the previous robot in the
+  // cycle wants from us)? Only if we merely reserved it: a robot can cancel a
+  // reservation, but it cannot give up a cell it is standing in.
+  releasable(cell) {
+    return this.leases.has(cell) && !this.footprint.includes(cell);
   }
 
   // Could this robot reach its target without the cell it is waiting for?
@@ -267,6 +311,15 @@ export class Robot {
     const t = this.sim.tick;
     if (!this.leases.size) return;
     if (!this.renewSoon && t - this.lastRenew < this.sim.cfg.renewEvery) return;
+    // An urgent renewal (lease nearly out) goes every tick, as before, except
+    // once renewals have gone unanswered for longer than any round trip can
+    // take: the robot is evidently cut off, so it slows to one every few ticks
+    // instead of flooding the network. On a healthy network this never kicks
+    // in, so normal traffic is unaffected.
+    const cfg = this.sim.cfg;
+    const silent = this.renewSince !== null && t - this.renewSince > 2 * cfg.delayMax + 2;
+    if (this.renewSoon && silent && t - this.lastRenew < URGENT_RENEW_GAP) return;
+    if (this.renewSince === null) this.renewSince = t;
     this.lastRenew = t;
     this.renewSoon = false;
     const byRegion = new Map();
@@ -282,6 +335,7 @@ export class Robot {
 
   handle(m) {
     const sim = this.sim;
+    if (m.loads) this.mergeLoads(m.loads);
     switch (m.type) {
       case 'GRANT': {
         // The robot cannot read the manager's clock. It conservatively assumes
@@ -341,6 +395,7 @@ export class Robot {
         }
         return;
       case 'RENEWED': {
+        this.renewSince = null;
         for (let i = 0; i < m.ok.length; i += 2) {
           const l = this.leases.get(m.ok[i]);
           if (l && l.epoch === m.ok[i + 1]) l.expiry = this.localExpiry(m.sentAt);
@@ -358,23 +413,27 @@ export class Robot {
       case 'PROBE': {
         if (m.initiator === this.id) {
           // The probe came back: the wait-for graph has a cycle through us.
-          if (this.waiting) sim.onDeadlock(m.path, this, m.alts);
+          if (this.waiting) sim.onDeadlock(m.path, this, m.alts, [this.releasable(m.wants), ...m.rel]);
           return;
         }
         if (this.waiting && this.waitingFor >= 0 && !m.path.includes(this.id) && m.path.length < 300) {
-          this.send('r' + this.waitingFor, { type: 'PROBE', initiator: m.initiator, path: [...m.path, this.id], alts: [...m.alts, this.hasAlternative()] });
+          this.send('r' + this.waitingFor, {
+            type: 'PROBE', initiator: m.initiator, path: [...m.path, this.id], alts: [...m.alts, this.hasAlternative()],
+            rel: [...m.rel, this.releasable(m.wants)], wants: this.waitCell,
+          });
         }
         return;
       }
       case 'ABORT':
-        if (this.waiting && sim.tick - this.lastYield > 30) this.yieldNow(m.key);
+        if (this.waiting && sim.tick - this.lastYield > 30) this.yieldNow(m.key, m.standing);
         return;
     }
   }
 
   // Deadlock victim: give up the request, avoid that cell for a while, replan.
-  yieldNow(key) {
+  yieldNow(key, standing = false) {
     const sim = this.sim;
+    this.wasWanted = standing;
     const t = sim.tick;
     const c = this.waitCell;
     this.send('m' + regionOf(c), { type: 'CANCEL', robot: this.id, cell: c });
@@ -384,10 +443,33 @@ export class Robot {
     this.clearWaiting();
     this.path = [];
     this.releaseUnwanted();
+    // Standing in the cell the robot behind wants: cancelling frees nothing,
+    // so step aside into an empty neighbouring cell (a normal leased move).
+    if (this.wasWanted) {
+      const esc = this.escapeCell();
+      if (esc >= 0) this.path = [esc];
+    }
     this.yieldUntil = t + 2 + sim.rng.int(6);
     this.lastYield = t;
     this.state = 'YIELD';
     sim.onYield(this, key, c);
+  }
+
+  // An empty, open neighbouring cell to pull into (seen by the robot's own
+  // proximity sensor), avoiding crossing boxes and the cells it just gave up.
+  escapeCell() {
+    const sim = this.sim;
+    const L = sim.layout;
+    const x = xOf(this.cell), y = yOf(this.cell);
+    const opts = [];
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nx = x + dx, ny = y + dy;
+      if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+      const c = cellOf(nx, ny);
+      if (L.solid[c] || L.box[c] || L.station[c] || sim.physCount[c] > 0 || this.avoid.has(c)) continue;
+      opts.push(c);
+    }
+    return opts.length ? opts[sim.rng.int(opts.length)] : -1;
   }
 
   // Return any lease we no longer need (other than the cell we stand on),
@@ -411,9 +493,10 @@ export class Robot {
     const avoid = this.avoid;
     for (const [c, until] of avoid) if (until < t) avoid.delete(c);
     const avoiding = (c) => avoid.has(c);
-    let path = avoid.size ? astar(this.cell, this.target, avoiding) : null;
-    if (!path) path = astar(this.cell, this.target, null);
-    if (!path) path = astar(this.cell, this.target, avoiding, false);
+    const rc = this.regionCost();
+    let path = avoid.size ? astar(this.cell, this.target, avoiding, true, rc) : null;
+    if (!path) path = astar(this.cell, this.target, null, true, rc);
+    if (!path) path = astar(this.cell, this.target, avoiding, false, rc);
     this.path = path || [];
     if (this.protocol) this.releaseUnwanted();
   }
@@ -491,7 +574,15 @@ export class Robot {
     const sim = this.sim;
     const L = sim.layout;
     // Pick from anywhere; drop at one of the two nearest packing stations.
-    const pickup = sim.rng.pick(L.pickups);
+    // Admission control: draw a few candidate jobs and skip any in a region
+    // this robot believes is full, taking the least loaded otherwise.
+    let pickup = sim.rng.pick(L.pickups);
+    if (sim.cfg.congestion) {
+      for (let i = 0; i < 5 && this.loadOf(pickup) >= sim.cfg.admitBelow; i++) {
+        const alt = sim.rng.pick(L.pickups);
+        if (this.loadOf(alt) < this.loadOf(pickup)) pickup = alt;
+      }
+    }
     const px = xOf(pickup), py = yOf(pickup);
     const near = [...L.stations].sort((a, b) => Math.abs(xOf(a) - px) + Math.abs(yOf(a) - py) - Math.abs(xOf(b) - px) - Math.abs(yOf(b) - py));
     this.task = { stage: 'pickup', pickup, dropoff: near[sim.rng.int(2)] };
