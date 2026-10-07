@@ -119,7 +119,7 @@ In short, a fast enough central server matches the distributed design in normal 
 
 ### Multi-storey warehouse
 
-Click the **Multi-storey** tab in the top bar (leases + detection on 3 floors), or set **Floors** (1–3) and **Lifts** (1–8) in the left panel. The other mode tabs switch back to a single floor. Each floor is the same 48×32 grid with its own 16 region managers. Pickups are on every floor. Packing stations are on the **ground and first floor**, and every job drops at one of them, chosen at random between the two floors. So ground- and first-floor robots serve both station floors, and second-floor robots deliver to either. Many jobs therefore need lift rides. Lifts are drawn in light green, deeper green while a robot holds the car. With one floor (the default), every run is identical to the single-floor simulator.
+Click the **Multi-storey** tab in the top bar (leases + detection on 3 floors), or set **Floors** (1–3) and **Lifts** (1–8) in the left panel. The other mode tabs switch back to a single floor. Each floor is the same 48×32 grid with its own 16 region managers. Pickups are on every floor. Packing stations are on the **ground and first floor**, and a job can drop on either. 70% of jobs drop on the station floor nearest their pickup: their own floor, or the first floor for second-floor pickups. The other 30% drop on the other station floor. So ground- and first-floor robots serve both station floors, and second-floor robots deliver to either. Lifts are drawn in light green, deeper green while a robot holds the car. With one floor (the default), every run is identical to the single-floor simulator.
 
 **Layout.** Each lift sits in the middle of an aisle at the same spot on every floor. That aisle becomes a one-way lobby of six cells: two queue cells, the entry, the shaft, the exit and one more. Robots waiting for the car queue inside the lobby, off the highways, and never meet a robot leaving the car head-on. (An earlier version put lifts in the outer wall. Their queues spilled onto the ring road that also serves the packing stations, and throughput fell as robots were added.)
 
@@ -136,10 +136,10 @@ Click the **Multi-storey** tab in the top bar (leases + detection on 3 floors), 
 **Verified.**
 
 * Stress test (with stations on the ground floor only): 24 runs on 3 floors with message loss up to 15%, clock drift up to 20% and injected crashes and pauses (326,000 moves, 3,310 rides). Results: 0 collisions, never two robots in a shaft, and the car always at the floor of any robot standing in the shaft.
-* With stations on the ground and first floor: 12 more runs (145,000 moves, 1,314 rides), again 0 collisions and no shaft or car violations.
+* With stations on the ground and first floor and the 70/30 drop-off split: 12 more runs (220,000 moves, 2,309 rides), again 0 collisions and no shaft or car violations.
 * Forced failures all recover:
   * A robot crashing mid-ride takes the lift out of service after 5.6 s; it is back after about 10 s.
   * A lift manager crashing during a ride reconciles in 5.5 s.
   * A robot that freezes inside the car past its lease is fenced on its stale epoch, resyncs and gets the car back.
 
-**Findings (90 robots, 3 minutes, mean of 2 seeds).** Lifts are the bottleneck. With 3 floors, throughput goes from 7 tasks/min with 1 lift to 20 with 2, 38 with 4, 46 with 6 and 56 with 8. The mean wait for a car falls from 8.4 s to 4.7 s. One floor manages 84 tasks/min, two floors with 4 lifts 58. A ride holds a car for about 3.5 s: drive in, ride, wait for the exit cell, drive out. Empty trips to the next waiter add more. So a lift moves about one robot every 4–5 s. The **Benchmark** (`B`) has these sweeps in section E.
+**Findings (90 robots, 3 minutes, mean of 2 seeds).** Lifts are the bottleneck. With 3 floors, throughput goes from 9 tasks/min with 1 lift to 26 with 2, 44 with 4, 53 with 6 and 64 with 8. The mean wait for a car falls from 8.3 s to 4.3 s. One floor manages 84 tasks/min, two floors with 4 lifts 70. A ride holds a car for about 3.5 s: drive in, ride, wait for the exit cell, drive out. Empty trips to the next waiter add more. So a lift moves about one robot every 4–5 s. The **Benchmark** (`B`) has these sweeps in section E.

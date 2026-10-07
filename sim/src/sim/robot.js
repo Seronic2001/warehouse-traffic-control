@@ -6,6 +6,7 @@ import { regionOf, fmtCell, xOf, yOf, cellOf, floorOf, rideTicks, W, H } from '.
 
 
 const URGENT_RENEW_GAP = 4; // ticks
+const SAME_FLOOR_DROP = 0.7; // share of jobs dropped on the station floor nearest the pickup
 
 export class Robot {
   constructor(sim, id, cell) {
@@ -604,14 +605,15 @@ export class Robot {
       }
     }
     // Drop at one of the two nearest packing stations. With several floors
-    // the ground and first floor both have stations, and any job can end on
-    // either: the floor is drawn at random, then the two nearest stations
-    // on it are candidates.
-    const px = xOf(pickup), py = yOf(pickup);
+    // the ground and first floor both have stations, and a job can end on
+    // either: 70% of jobs drop on the station floor nearest their pickup
+    // (their own floor, if it has stations), 30% on another station floor.
+    const px = xOf(pickup), py = yOf(pickup), pf = floorOf(pickup);
     let stations = L.stations;
     const stationFloors = [...new Set(stations.map(floorOf))];
     if (stationFloors.length > 1) {
-      const f = sim.rng.pick(stationFloors);
+      const home = stationFloors.reduce((a, b) => (Math.abs(b - pf) < Math.abs(a - pf) ? b : a));
+      const f = sim.rng.chance(SAME_FLOOR_DROP) ? home : sim.rng.pick(stationFloors.filter((x) => x !== home));
       stations = stations.filter((s) => floorOf(s) === f);
     }
     const near = [...stations].sort((a, b) => Math.abs(xOf(a) - px) + Math.abs(yOf(a) - py) - Math.abs(xOf(b) - px) - Math.abs(yOf(b) - py));
