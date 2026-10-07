@@ -180,14 +180,15 @@ app.startScenario = (key, opts = {}) => {
   const sc = SCENARIOS[key];
   const { maxBackground, ...over } = sc.cfg;
   // Scenarios are scripted on a single floor.
-  const cfg = { ...app.cfg, ...over, floors: 1, robots: Math.min(app.cfg.robots, maxBackground ?? 999) };
+  const cfg = { ...app.cfg, floors: 1, ...over, robots: Math.min(app.cfg.robots, maxBackground ?? 999) };
   app.scenario = key;
   app.ctx = { start: 0, step: 0, shownAt: 0 };
   app.attach(new Simulation(cfg, sc));
   if (opts.silent) return;
   if (tour.active) tour.end();
   hud.showNarration(sc);
-  flyTo(new THREE.Vector3(wx(sc.focus.x), 0, wz(sc.focus.y)), sc.focus.dist, 0.82);
+  if (cfg.floors > 1) app.setFloorView(-1);
+  flyTo(new THREE.Vector3(wx(sc.focus.x), sc.focus.h ?? 0, wz(sc.focus.y)), sc.focus.dist, sc.focus.h ? 1.1 : 0.82);
   app.running = true;
   hud.syncTransport();
 };
@@ -319,13 +320,14 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'Space') {
     e.preventDefault();
     app.togglePlay();
-  } else if (tour.active && ['1', '2', '3', '4', '5', 'b', 'B', 'c', 'C', 'r', 'R'].includes(e.key)) {
+  } else if (tour.active && ['1', '2', '3', '4', '5', '6', 'b', 'B', 'c', 'C', 'r', 'R'].includes(e.key)) {
     return;
   } else if (e.key === '1') app.startScenario('deadlock');
   else if (e.key === '2') app.startScenario('crash');
   else if (e.key === '3') app.startScenario('pause');
   else if (e.key === '4') app.startScenario('manager');
   else if (e.key === '5') app.startScenario('partition');
+  else if (e.key === '6') app.startScenario('lift');
   else if (e.key === 'b' || e.key === 'B') bench.open();
   else if (e.key === 'c' || e.key === 'C') compare.open();
   else if (e.key === 't' || e.key === 'T') tour.active ? tour.end() : tour.start();

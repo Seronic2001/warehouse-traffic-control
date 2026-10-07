@@ -2,6 +2,8 @@
 //   A. strategies vs robot density (baseline / detection / ordered)
 //   B. safety margin under a hostile network (loss, delay, clock drift)
 //   C. recovery times after injected crashes, pauses and manager crashes
+//   D. congestion control over long runs
+//   E. multi-storey: throughput vs number of lifts and of floors
 import { MODE_SERIES } from '../render/palette.js';
 import { WAIT_BIN_SECONDS } from '../sim/simulation.js';
 import { runPool, poolSize } from './pool.js';
@@ -19,6 +21,11 @@ const MARGIN_SEEDS = [1, 2];
 const FAIL_TICKS = 3600; // 3 minutes, a failure every 15 s
 const CONG_TICKS = 12000; // 10 minutes: congestion builds up slowly
 const CONG_DENSITIES = [100, 150, 200]; // workers; one core is always left for the page
+const LIFT_COUNTS = [1, 2, 4, 6, 8];
+const FLOOR_COUNTS = [1, 2, 3];
+const STOREY = { mode: 'detect', robots: 90 }; // per run; spread over all floors
+const STOREY_TICKS = 3600; // 3 minutes
+const STOREY_SEEDS = [1, 2];
 
 const DENSITY_METRICS = [
   { key: 'collisionsPer1k', title: 'Collisions per 1,000 moves', note: 'Both protocols must stay at 0', fmt: (v) => v.toFixed(1) },
@@ -81,6 +88,10 @@ export class Bench {
     for (const m of MARGINS) for (const seed of MARGIN_SEEDS) jobs.push({ id: `B:${m}:${seed}`, cfg: { ...base, ...HOSTILE, safetyMargin: m, seed }, ticks: SWEEP_A_TICKS });
     for (const mode of PROTOCOLS) jobs.push({ id: `C:${mode}`, cfg: { ...base, mode, robots: 120, injectFailures: true }, ticks: FAIL_TICKS });
     for (const n of CONG_DENSITIES) for (const on of [true, false]) jobs.push({ id: `D:${on ? 'on' : 'off'}:${n}`, cfg: { ...base, mode: 'detect', robots: n, congestion: on }, ticks: CONG_TICKS });
+    for (const seed of STOREY_SEEDS) {
+      for (const lifts of LIFT_COUNTS) jobs.push({ id: `E:lifts:${lifts}:${seed}`, cfg: { ...base, ...STOREY, floors: 3, lifts, seed }, ticks: STOREY_TICKS });
+      for (const floors of FLOOR_COUNTS) if (floors !== 3) jobs.push({ id: `E:floors:${floors}:${seed}`, cfg: { ...base, ...STOREY, floors, lifts: 4, seed }, ticks: STOREY_TICKS });
+    }
     return jobs;
   }
 
@@ -201,6 +212,23 @@ export class Bench {
     const perMin = (k, n) => (d(k, n, 'tasks') == null ? null : d(k, n, 'tasks') / ((CONG_TICKS * TICK_S) / 60));
     grid.appendChild(lineChart({ title: 'Average throughput, whole run', note: 'Tasks completed per minute over all 10 minutes', xs: CONG_DENSITIES, xFmt: (n) => `${n}`, xName: 'robots', fmt: (v) => v.toFixed(0), series: [{ ...on, values: CONG_DENSITIES.map((n) => perMin('on', n)) }, { ...off, values: CONG_DENSITIES.map((n) => perMin('off', n)) }] }));
     grid.appendChild(lineChart({ title: 'Throughput in the final minute', note: 'Without control, queues build up and throughput sags late in the run', xs: CONG_DENSITIES, xFmt: (n) => `${n}`, xName: 'robots', fmt: (v) => v.toFixed(0), series: [{ ...on, values: CONG_DENSITIES.map((n) => d('on', n, 'throughput')) }, { ...off, values: CONG_DENSITIES.map((n) => d('off', n, 'throughput')) }] }));
+
+    // ── E ──
+    const per = (r) => r.tasks / ((STOREY_TICKS * TICK_S) / 60);
+    const e = (kind, n, pick) => {
+      const id = kind === 'floors' && n === 3 ? (s) => `E:lifts:4:${s}` : (s) => `E:${kind}:${n}:${s}`;
+      const vals = STOREY_SEEDS.map((s) => this.results.get(id(s))).filter(Boolean).map(pick).filter((v) => v != null);
+      return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+    };
+    grid.appendChild(
+      section(
+        'Multi-storey: lifts are the bottleneck',
+        `${STOREY.robots} robots spread over the floors, ${(STOREY_TICKS * TICK_S) / 60} minutes, ${STOREY_SEEDS.length} seeds. Pickups are anywhere; packing stations are on the ground floor, so most jobs need a ride up and a ride down. Each lift carries one robot at a time.`,
+      ),
+    );
+    grid.appendChild(lineChart({ title: 'Throughput vs lifts', note: 'Tasks per minute, 3 floors', xs: LIFT_COUNTS, xFmt: (n) => `${n}`, xName: 'lifts', fmt: (v) => v.toFixed(0), series: [{ label: det.label, color: det.hex, values: LIFT_COUNTS.map((n) => e('lifts', n, per)) }] }));
+    grid.appendChild(lineChart({ title: 'Wait for a lift', note: 'Seconds from asking for the car to getting it, 3 floors', xs: LIFT_COUNTS, xFmt: (n) => `${n}`, xName: 'lifts', fmt: (v) => `${v.toFixed(1)}s`, series: [{ label: det.label, color: det.hex, values: LIFT_COUNTS.map((n) => e('lifts', n, (r) => r.avgLiftWait)) }] }));
+    grid.appendChild(lineChart({ title: 'Throughput vs floors', note: 'Tasks per minute with 4 lifts (one floor: no lifts)', xs: FLOOR_COUNTS, xFmt: (n) => `${n}`, xName: 'floors', fmt: (v) => v.toFixed(0), series: [{ label: det.label, color: det.hex, values: FLOOR_COUNTS.map((n) => e('floors', n, per)) }] }));
     this.table();
   }
 
@@ -255,6 +283,17 @@ export class Bench {
         const r = this.results.get(`D:${k}:${n}`);
         if (r) html += `<tr><td>${n}</td><td>${k}</td><td>${r.tasks}</td><td>${(r.tasks / ((CONG_TICKS * TICK_S) / 60)).toFixed(0)}</td><td>${r.throughput.toFixed(0)}</td><td>${r.collisions}</td></tr>`;
       }
+    html += `</table><h4>Multi-storey (${STOREY.robots} robots, ${(STOREY_TICKS * TICK_S) / 60} minutes, seed ${STOREY_SEEDS.join(' and ')})</h4><table><tr><th>Floors</th><th>Lifts</th><th>Seed</th><th>Tasks / min</th><th>Rides</th><th>Mean lift wait</th><th>Collisions</th></tr>`;
+    for (const seed of STOREY_SEEDS) {
+      for (const lifts of LIFT_COUNTS) {
+        const r = this.results.get(`E:lifts:${lifts}:${seed}`);
+        if (r) html += `<tr><td>3</td><td>${lifts}</td><td>${seed}</td><td>${(r.tasks / ((STOREY_TICKS * TICK_S) / 60)).toFixed(0)}</td><td>${r.rides}</td><td>${r.avgLiftWait == null ? '—' : r.avgLiftWait.toFixed(2) + ' s'}</td><td>${r.collisions}</td></tr>`;
+      }
+      for (const floors of FLOOR_COUNTS) {
+        const r = this.results.get(`E:floors:${floors}:${seed}`);
+        if (r) html += `<tr><td>${floors}</td><td>${floors === 1 ? '—' : 4}</td><td>${seed}</td><td>${(r.tasks / ((STOREY_TICKS * TICK_S) / 60)).toFixed(0)}</td><td>${r.rides}</td><td>${r.avgLiftWait == null ? '—' : r.avgLiftWait.toFixed(2) + ' s'}</td><td>${r.collisions}</td></tr>`;
+      }
+    }
     $('bench-table').innerHTML = html + '</table>';
   }
 }

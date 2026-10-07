@@ -2,7 +2,7 @@
 // robots by hand, lets normal traffic run around them, and narrates progress
 // by watching the flags the simulation raises.
 import { astar } from './astar.js';
-import { cellOf, regionOf, getLayout, xOf, yOf } from './layout.js';
+import { cellOf, getLayout, xOf, yOf } from './layout.js';
 
 function nearestPickup(x, y) {
   const L = getLayout();
@@ -192,6 +192,47 @@ export const SCENARIOS = {
         done: (sim, ctx) => since(sim, ctx, 'rejoined'),
       },
       { text: 'R0 got its own cell back with a fresh epoch and carries on. Nobody entered a cell without a valid lease, before, during or after the partition.', done: () => false },
+    ],
+  },
+
+  lift: {
+    title: 'Crash inside a lift',
+    focus: { x: 18, y: 11.5, dist: 34, h: 10 },
+    cfg: { mode: 'detect', floors: 3, lifts: 4, maxBackground: 90 },
+    labels: [0],
+    // R0 waits at lift L0's entry on the top floor, the car parked there,
+    // with a job on the ground floor.
+    keepClear: getLayout(3, 4).lifts[0].lobbies.flat(),
+    setup(sim) {
+      const L = sim.layout;
+      const l = L.lifts[0];
+      const top = L.floors - 1;
+      sim.cars[0].floor = top;
+      const r = sim.addRobot(l.ins[top]);
+      r.basePrio = 2;
+      r.heading = l.dir > 0 ? 0 : Math.PI;
+      const pickup = L.pickups.find((c) => c < L.NF && Math.abs(xOf(c) - 21) + Math.abs(yOf(c) - 12) < 3) ?? L.pickups[0];
+      r.task = { stage: 'pickup', pickup, dropoff: nearestStation(21, 12) };
+      r.path = astar(r.cell, pickup, null, true, null, L) || [];
+    },
+    onTick(sim) {
+      const r = sim.robots[0];
+      if (r.alive && r.motion?.ride && sim.tick - r.motion.t0 === 14) sim.crashRobot(0);
+    },
+    steps: [
+      {
+        text: '<b>R0</b> is about to ride lift <b>L0</b> from the top floor to the ground. Its lift manager calls the car, then leases it to R0 with an epoch, just like a cell. The lease covers a whole ride, because there is no Wi-Fi in the shaft.',
+        done: (sim, ctx) => since(sim, ctx, 'crashed'),
+      },
+      {
+        text: '<b>R0 crashed mid-ride.</b> The car stops between floors. Its lease is still valid, so nobody else may use the lift, and robots queue at L0\'s entries on every floor.',
+        done: (sim, ctx) => since(sim, ctx, 'blocked'),
+      },
+      {
+        text: 'The car lease expired with R0 still inside, so lift <b>L0 is out of service</b> (Blocked). Robots waiting for it are told, avoid it and replan through the other lifts. Traffic keeps moving.',
+        done: (sim, ctx) => since(sim, ctx, 'cleared'),
+      },
+      { text: 'A crew winched the car to a floor and removed R0; the world sent <b>Cleared</b>. L0 is back in service with a new epoch, and R0 will return once repaired.', done: () => false },
     ],
   },
 
