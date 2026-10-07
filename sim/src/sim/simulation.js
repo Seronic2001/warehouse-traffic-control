@@ -2,7 +2,7 @@
 // ticks, delivers network messages, detects collisions (including head-on
 // swaps), and enforces fencing by rejecting moves carrying a stale epoch.
 import { Rng } from './rng.js';
-import { getLayout, regionOf, fmtCell, xOf, yOf, W } from './layout.js';
+import { getLayout, regionOf, fmtCell, xOf, yOf, floorOf, cellOf } from './layout.js';
 import { Network } from './network.js';
 import { RegionManager, fmtEpoch } from './manager.js';
 import { Robot } from './robot.js';
@@ -10,6 +10,7 @@ import { Robot } from './robot.js';
 export const DEFAULTS = {
   seed: 42,
   robots: 120,
+  floors: 1,
   mode: 'detect', // 'baseline' | 'detect' | 'ordered' | 'central'
   tickMs: 50,
   moveTicks: 6,
@@ -53,13 +54,13 @@ export class Simulation {
   constructor(cfg = {}, script = null) {
     this.cfg = { ...DEFAULTS, ...cfg };
     this.rng = new Rng(this.cfg.seed);
-    this.layout = getLayout();
+    this.layout = getLayout(this.cfg.floors);
     this.tick = 0;
     this.net = new Network(this);
     this.managers = [];
     // Centralised mode: one coordinator (M0) owns every cell on the floor.
     this.central = this.cfg.mode === 'central';
-    const nMgr = this.central ? 1 : this.layout.RX * this.layout.RY;
+    const nMgr = this.central ? 1 : this.layout.R;
     for (let i = 0; i < nMgr; i++) this.managers.push(new RegionManager(this, i));
     this.robots = [];
     this.physCount = new Uint16Array(this.layout.N);
@@ -252,7 +253,7 @@ export class Simulation {
       if (r.removed) continue;
       const p = this.posOf(r, t);
       pos[r.id] = p;
-      const key = Math.round(p[0]) + Math.round(p[1]) * W;
+      const key = cellKey(floorOf(r.cell), Math.round(p[0]), Math.round(p[1]));
       let b = grid.get(key);
       if (!b) grid.set(key, (b = []));
       b.push(r.id);
@@ -261,10 +262,10 @@ export class Simulation {
     for (const r of this.robots) {
       if (r.removed) continue;
       const [x, y] = pos[r.id];
-      const cx = Math.round(x), cy = Math.round(y);
+      const cx = Math.round(x), cy = Math.round(y), f = floorOf(r.cell);
       for (let oy = -1; oy <= 1; oy++) {
         for (let ox = -1; ox <= 1; ox++) {
-          const b = grid.get(cx + ox + (cy + oy) * W);
+          const b = grid.get(cellKey(f, cx + ox, cy + oy));
           if (!b) continue;
           for (const o of b) {
             if (o <= r.id) continue;
@@ -326,11 +327,11 @@ export class Simulation {
   // A Wi-Fi dead zone: every robot physically inside the rectangle can neither
   // send nor receive. Managers and the world keep running; to a manager, a
   // robot behind a partition looks exactly like a crashed one.
-  cutNetwork(cx, cy, r = 2, ticks = 160) {
-    const z = { x0: cx - r, y0: cy - r, x1: cx + r, y1: cy + r, from: this.tick, until: this.tick + ticks };
+  cutNetwork(cx, cy, r = 2, ticks = 160, f = 0) {
+    const z = { f, x0: cx - r, y0: cy - r, x1: cx + r, y1: cy + r, from: this.tick, until: this.tick + ticks };
     this.deadZones.push(z);
     const inside = this.robots.filter((rb) => !rb.removed && this.inZone(z, rb)).map((rb) => rb.id);
-    this.event('partition', `Network partition: robots in ${fmtCell(cx - r + (cy - r) * W)}–${fmtCell(cx + r + (cy + r) * W)} are cut off for ${((ticks * this.cfg.tickMs) / 1000).toFixed(0)}s (${inside.length} inside)`, { cell: cx + cy * W, robots: inside });
+    this.event('partition', `Network partition: robots in ${fmtCell(cellOf(cx - r, cy - r, f))}–${fmtCell(cellOf(cx + r, cy + r, f))} are cut off for ${((ticks * this.cfg.tickMs) / 1000).toFixed(0)}s (${inside.length} inside)`, { cell: cellOf(cx, cy, f), robots: inside });
     this.flag('partition');
     return z;
   }
@@ -339,7 +340,7 @@ export class Simulation {
     const t = this.tick;
     for (const z of this.deadZones) {
       if (z.until > t) continue;
-      this.event('healed', `Network partition healed after ${(((t - z.from) * this.cfg.tickMs) / 1000).toFixed(0)}s: cut-off robots can talk again`, { cell: ((z.x0 + z.x1) >> 1) + ((z.y0 + z.y1) >> 1) * W });
+      this.event('healed', `Network partition healed after ${(((t - z.from) * this.cfg.tickMs) / 1000).toFixed(0)}s: cut-off robots can talk again`, { cell: cellOf((z.x0 + z.x1) >> 1, (z.y0 + z.y1) >> 1, z.f) });
       this.flag('healed');
     }
     this.deadZones = this.deadZones.filter((z) => z.until > t);
@@ -348,7 +349,7 @@ export class Simulation {
   inZone(z, r) {
     for (const c of r.footprint) {
       const x = xOf(c), y = yOf(c);
-      if (x >= z.x0 && x <= z.x1 && y >= z.y0 && y <= z.y1) return true;
+      if (floorOf(c) === z.f && x >= z.x0 && x <= z.x1 && y >= z.y0 && y <= z.y1) return true;
     }
     return false;
   }
@@ -575,6 +576,9 @@ export class Simulation {
 }
 
 export const WAIT_BIN_SECONDS = WAIT_BIN;
+
+// Collision-grid bucket: floor, then row and column with a one-cell border.
+const cellKey = (f, x, y) => (f * 64 + y + 1) * 64 + x + 1;
 
 function angleDiff(a, b) {
   let d = a - b;

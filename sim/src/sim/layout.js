@@ -2,6 +2,11 @@
 // Two-lane highways run along every region border (so the busiest crossings
 // are exactly where regions meet), shelf blocks sit between them, and packing
 // stations sit in one-way drive-through bays cut into the four walls.
+//
+// A warehouse can have several floors stacked on top of each other. Cell ids
+// run floor by floor (c = floor·NF + y·W + x), so with one floor every id is
+// exactly what it always was. Regions are numbered the same way: 16 per floor.
+// Packing stations are on the ground floor only.
 
 export const W = 48;
 export const H = 32;
@@ -9,23 +14,32 @@ export const RW = 12;
 export const RH = 8;
 export const RX = W / RW; // regions across
 export const RY = H / RH; // regions down
+export const NF = W * H; // cells per floor
+export const RF = RX * RY; // regions per floor
 
 const HWY_COLS = [1, 2, 11, 12, 23, 24, 35, 36, 45, 46];
 const HWY_ROWS = [1, 2, 7, 8, 15, 16, 23, 24, 29, 30];
 const STATION_ROWS = [4, 12, 19, 27];
 const STATION_COLS = [6, 18, 29, 41];
 
-export const cellOf = (x, y) => y * W + x;
+export const cellOf = (x, y, f = 0) => f * NF + y * W + x;
 export const xOf = (c) => c % W;
-export const yOf = (c) => (c / W) | 0;
-export const regionOf = (c) => ((yOf(c) / RH) | 0) * RX + ((xOf(c) / RW) | 0);
-export const fmtCell = (c) => `(${xOf(c)},${yOf(c)})`;
+export const yOf = (c) => ((c % NF) / W) | 0;
+export const floorOf = (c) => (c / NF) | 0;
+export const regionOf = (c) => floorOf(c) * RF + ((yOf(c) / RH) | 0) * RX + ((xOf(c) / RW) | 0);
+export const fmtCell = (c) => (c >= NF ? `F${floorOf(c)}(${xOf(c)},${yOf(c)})` : `(${xOf(c)},${yOf(c)})`);
 
-let cached = null;
+const cached = new Map();
 
-export function getLayout() {
-  if (cached) return cached;
-  const N = W * H;
+// The layout for a warehouse with `floors` floors (cached).
+export function getLayout(floors = 1) {
+  let L = cached.get(floors);
+  if (!L) cached.set(floors, (L = floors === 1 ? buildFloor() : stack(buildFloor(), floors)));
+  return L;
+}
+
+function buildFloor() {
+  const N = NF;
   const shelf = new Uint8Array(N);
   const wall = new Uint8Array(N); // outer ring, except the station bays
   const solid = new Uint8Array(N); // shelf | wall: impassable for robots
@@ -134,6 +148,27 @@ export function getLayout() {
     if (nearShelf && !hwyRow.has(y) && !hwyCol.has(x)) pickups.push(c);
   }
 
-  cached = { W, H, N, RW, RH, RX, RY, shelf, wall, solid, station, bay, box, noCrossH, noCrossV, laneH, laneV, stations, pickups, free, aisleCols, hwyRows: HWY_ROWS, hwyCols: HWY_COLS };
-  return cached;
+  return { W, H, N, NF, floors: 1, R: RF, RW, RH, RX, RY, shelf, wall, solid, station, bay, box, noCrossH, noCrossV, laneH, laneV, stations, pickups, free, aisleCols, hwyRows: HWY_ROWS, hwyCols: HWY_COLS };
+}
+
+// Stack copies of one floor. Upper floors have no packing stations: their
+// station bays are plain wall.
+function stack(one, floors) {
+  const N = NF * floors;
+  const L = { ...one, N, floors, R: RF * floors, stations: [], pickups: [], free: [] };
+  for (const k of ['shelf', 'wall', 'solid', 'station', 'bay', 'box', 'noCrossH', 'noCrossV', 'laneH', 'laneV']) {
+    L[k] = new one[k].constructor(N);
+    for (let f = 0; f < floors; f++) L[k].set(one[k], f * NF);
+  }
+  for (let c = NF; c < N; c++) {
+    if (!L.bay[c]) continue;
+    L.bay[c] = L.station[c] = 0;
+    L.wall[c] = L.solid[c] = 1;
+  }
+  L.stations = one.stations.slice();
+  for (let f = 0; f < floors; f++) {
+    for (const c of one.pickups) L.pickups.push(f * NF + c);
+    for (const c of one.free) L.free.push(f * NF + c);
+  }
+  return L;
 }

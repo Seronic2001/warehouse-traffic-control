@@ -11,7 +11,7 @@
 // In centralised mode a single manager (M0) owns every cell. It needs no
 // gossip (it sees every region's load exactly) and no probes: it holds the
 // whole wait-for graph and searches it for cycles itself.
-import { fmtCell, regionOf } from './layout.js';
+import { fmtCell, regionOf, RF } from './layout.js';
 
 export const GEN_STRIDE = 1_000_000;
 export const fmtEpoch = (e) => (e >= GEN_STRIDE ? `${e % GEN_STRIDE}·i${Math.floor(e / GEN_STRIDE)}` : `${e}`);
@@ -33,15 +33,18 @@ export class RegionManager {
     // region's load, spread by gossip. The view is replaced, never mutated,
     // so replies can carry it by reference.
     this.cap = 0;
-    this.regionCap = new Array(16).fill(0);
+    this.nRegions = sim.layout.R;
+    this.regionCap = new Array(this.nRegions).fill(0);
     for (let c = 0; c < sim.layout.N; c++) {
       if (sim.layout.solid[c]) continue;
       this.regionCap[regionOf(c)]++;
       if (sim.mgrOf(c) === id) this.cap++;
     }
-    this.view = emptyView();
+    this.view = emptyView(this.nRegions);
+    // Gossip peers: the neighbouring regions on the same floor.
     const { RX, RY } = sim.layout;
-    const x = id % RX, y = (id / RX) | 0;
+    const local = id % RF;
+    const x = local % RX, y = (local / RX) | 0;
     this.peers = sim.central ? [] : [[1, 0], [-1, 0], [0, 1], [0, -1]].filter(([dx, dy]) => x + dx >= 0 && y + dy >= 0 && x + dx < RX && y + dy < RY).map(([dx, dy]) => 'm' + (id + dx + dy * RX));
     // Processing capacity (cfg.mgrRate messages per tick): messages beyond it
     // wait here, oldest first.
@@ -60,10 +63,10 @@ export class RegionManager {
     const t = this.sim.tick;
     if (this.sim.central) {
       // The central coordinator sees every region's load directly.
-      const util = new Array(16).fill(0);
+      const util = new Array(this.nRegions).fill(0);
       for (const c of this.owned) util[regionOf(c)]++;
-      for (let i = 0; i < 16; i++) util[i] /= this.regionCap[i] || 1;
-      this.view = { util, stamp: new Array(16).fill(t) };
+      for (let i = 0; i < this.nRegions; i++) util[i] /= this.regionCap[i] || 1;
+      this.view = { util, stamp: new Array(this.nRegions).fill(t) };
       return;
     }
     const util = this.owned.size / this.cap;
@@ -109,7 +112,7 @@ export class RegionManager {
     this.held.clear();
     this.backlog = [];
     this.inq = [];
-    this.view = emptyView();
+    this.view = emptyView(this.nRegions);
     this.outageRobots = new Set();
     sim.event('mgrdown', `Region manager M${this.id} crashed: its reservation table for region ${this.id} is lost`, { mgr: this.id });
     sim.flag('mgrDown');
@@ -503,6 +506,6 @@ RegionManager.prototype.onCycle = function (cyc, out) {
   sim.onDeadlock(cyc, this, alts, rel);
 };
 
-function emptyView() {
-  return { util: new Array(16).fill(0), stamp: new Array(16).fill(-1) };
+function emptyView(n) {
+  return { util: new Array(n).fill(0), stamp: new Array(n).fill(-1) };
 }

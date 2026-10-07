@@ -2,7 +2,7 @@
 // through network messages (to region managers and other robots) and through
 // the world simulator's actuator (tryMove), which enforces fencing.
 import { astar } from './astar.js';
-import { regionOf, fmtCell, xOf, yOf, cellOf, W, H } from './layout.js';
+import { regionOf, fmtCell, xOf, yOf, cellOf, floorOf, W, H } from './layout.js';
 
 const URGENT_RENEW_GAP = 4; // ticks
 
@@ -19,8 +19,8 @@ export class Robot {
     this.drift = sim.cfg.clockDrift ? (sim.rng.float() * 2 - 1) * sim.cfg.clockDrift : 0;
     // This robot's (possibly stale) view of every region's load, picked up
     // from the managers' replies.
-    this.loads = new Array(16).fill(0);
-    this.loadStamp = new Array(16).fill(-1);
+    this.loads = new Array(sim.layout.R).fill(0);
+    this.loadStamp = new Array(sim.layout.R).fill(-1);
   }
 
   mergeLoads(view) {
@@ -38,8 +38,8 @@ export class Robot {
     const cfg = this.sim.cfg;
     if (!cfg.congestion) return null;
     const t = this.sim.tick;
-    const cost = new Float32Array(16);
-    for (let i = 0; i < 16; i++) {
+    const cost = new Float32Array(this.loads.length);
+    for (let i = 0; i < cost.length; i++) {
       if (this.loadStamp[i] < 0 || t - this.loadStamp[i] > 400) continue;
       cost[i] = Math.max(0, this.loads[i] - cfg.crowdedAt) * cfg.detourWeight;
     }
@@ -304,7 +304,7 @@ export class Robot {
     const key = this.cell * 4096 + this.waitCell;
     if (this.altKey === key) return this.altValue;
     const wc = this.waitCell;
-    const path = astar(this.cell, this.target, (c) => c === wc);
+    const path = astar(this.cell, this.target, (c) => c === wc, true, null, this.sim.layout);
     this.altKey = key;
     this.altValue = !!path && path[0] !== wc;
     return this.altValue;
@@ -468,7 +468,7 @@ export class Robot {
     for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
       const nx = x + dx, ny = y + dy;
       if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
-      const c = cellOf(nx, ny);
+      const c = cellOf(nx, ny, floorOf(this.cell));
       if (L.solid[c] || L.box[c] || L.station[c] || sim.physCount[c] > 0 || this.avoid.has(c)) continue;
       opts.push(c);
     }
@@ -497,9 +497,10 @@ export class Robot {
     for (const [c, until] of avoid) if (until < t) avoid.delete(c);
     const avoiding = (c) => avoid.has(c);
     const rc = this.regionCost();
-    let path = avoid.size ? astar(this.cell, this.target, avoiding, true, rc) : null;
-    if (!path) path = astar(this.cell, this.target, null, true, rc);
-    if (!path) path = astar(this.cell, this.target, avoiding, false, rc);
+    const L = this.sim.layout;
+    let path = avoid.size ? astar(this.cell, this.target, avoiding, true, rc, L) : null;
+    if (!path) path = astar(this.cell, this.target, null, true, rc, L);
+    if (!path) path = astar(this.cell, this.target, avoiding, false, rc, L);
     this.path = path || [];
     if (this.protocol) this.releaseUnwanted();
   }
