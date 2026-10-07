@@ -18,6 +18,8 @@ npm run build      # static build in dist/ (any static host works)
 | `3` | **Pause past the lease.** The frozen robot resumes and acts on epoch 1, the world rejects the move because the epoch is now 2, and the robot resyncs. |
 | `4` | **Region manager crash.** M5 loses its table. Robots in region 5 stop as their leases run low. M5 restarts with a new incarnation number, rebuilds its table from robot reports, and refuses grants until it's done. |
 | `5` | **Network partition.** A Wi-Fi dead zone cuts R0 off while it holds a lease on the cell ahead. Its renewals are lost, so by its own clock the lease runs out and it refuses to move. A moment later the manager's copy expires too: the empty cell goes to R1 with a higher epoch and R0's own cell is Blocked. When the network heals, R0's renewals come back "lost", it resyncs with the world and gets its cell back. |
+| `6` | **Crash in a lift** (3 floors). R0 crashes halfway down lift L0. Its car lease expires with it inside, so the lift goes **out of service** and waiting robots reroute through the other lifts. A crew winches the car to a floor and clears it. |
+| `V` | **Floor view** (multi-storey only): cycles between all floors (an exploded stack) and each single floor. The same choice is in the floor bar under the mode tabs. |
 | `M` | **Message timeline** for the selected robot (also the **Timeline** button in the inspector). Each process the robot talks to gets a lane: itself, its region managers, the world, other robots. Each message is an arrow from sender to receiver; lost messages end in a ×. Above the robot's lane are the leases it believes it holds. A lease bar turns hatched once the robot's own clock says it has expired. Hover for details, toggle message kinds, and pick a 4/8/16 s window. |
 | `[` / `]` | **Rewind / forward 5 s.** The scrubber above the dock can drag to any earlier moment of the run. Marks on it show deadlocks, crashes, fencing, manager failures and partitions; click one to jump to 1 s before it. Playing on from an earlier moment replays the same future. Acting there (crash, freeze, cut the network) starts a new branch. |
 | `B` | **Benchmark** (runs on a pool of Web Workers, one per spare CPU core; about 25 s on an 8-core laptop): strategies vs density (collisions, throughput, deadlocks, time to resolve, wait distribution and p95, messages per move); the lease safety margin under a hostile network; recovery times after injected robot crashes, pauses and manager crashes; and congestion control on vs off over 10-minute runs. |
@@ -39,6 +41,8 @@ Click any robot to see its leases, epochs, expiry bars and what it is waiting fo
 | Failure scenarios | `src/sim/scenarios.js` |
 | Replay (checkpoints + action log) | `src/sim/history.js` |
 | Message timeline recorder | `src/sim/trace.js`, `src/ui/timeline.js` |
+| Floors and lifts (layout, A* rides) | `src/sim/layout.js`, `src/sim/astar.js` |
+| Lift managers | `src/sim/lift.js` |
 
 Robots, managers and the world only talk to each other through network messages. The single exception is the move actuator, which is where fencing happens. Every run is replayable from its seed.
 
@@ -112,3 +116,29 @@ Results (seeds 1–3, default settings):
 | Recovery after a coordinator crash | 4.3 s | 4.3 s | close |
 
 In short, a fast enough central server matches the distributed design in normal operation and sends fewer messages. The distributed design wins on per-node load, on running with modest hardware, and on how much of the floor a crash takes down. Below about 800 msgs/s the central server suffers congestion collapse: renewals queue behind requests, leases run out, robots resync, and that adds even more traffic.
+
+### Multi-storey warehouse
+
+Set **Floors** (1–3) and **Lifts** (1–8) in the left panel. Each floor is the same 48×32 grid with its own 16 region managers. Packing stations are on the ground floor and pickups are on every floor, so most jobs need a lift ride up and another down. With one floor (the default), every run is identical to the single-floor simulator.
+
+**Layout.** Each lift sits in the middle of an aisle at the same spot on every floor. That aisle becomes a one-way lobby of six cells: two queue cells, the entry, the shaft, the exit and one more. Robots waiting for the car queue inside the lobby, off the highways, and never meet a robot leaving the car head-on. (An earlier version put lifts in the outer wall. Their queues spilled onto the ring road that also serves the packing stations, and throughput fell as robots were added.)
+
+**Protocol.** Each lift has a **lift manager**. It leases out the car exactly as a region manager leases out a cell: one holder at a time, a queue, an epoch, fencing, expiry, crash and reconciliation. The differences:
+
+* All shaft cells of a lift (one per floor) are the same resource, so they share one table entry and one epoch, and a grant fences them all.
+* The manager first calls the car to the waiting robot's floor. It is wired to the lift's motor, not a network peer. It grants the lease only once the car is there. The world also refuses to let a robot into a shaft unless the car is parked at that floor.
+* **There is no Wi-Fi in the shaft.** A robot can't renew while riding, so a car lease lasts a full ride plus the normal lease. A robot boards only if its lease covers the whole ride plus the safety margin.
+* A robot asks for both shaft cells of a ride at once. They belong to the same manager, so this can't break the global ordering. It asks for the exit cell after arriving, which only robots leaving that lift ever use.
+* The car serves the highest-priority waiter on the floor where the car already is, so it avoids empty trips. A waiter on another floor goes first once it has waited 8 s, so nobody starves.
+* Waiting for the car is a normal wait-for edge to the car's holder. Probes therefore find deadlocks through a lift, and across floors, without any change.
+* If a car lease expires with a robot inside, the whole lift is **out of service** until the crew clears it. A stuck car is winched to a floor.
+
+**Verified.**
+
+* Stress test: 24 runs on 3 floors with message loss up to 15%, clock drift up to 20% and injected crashes and pauses (326,000 moves, 3,310 rides). Results: 0 collisions, never two robots in a shaft, and the car always at the floor of any robot standing in the shaft.
+* Forced failures all recover:
+  * A robot crashing mid-ride takes the lift out of service after 5.6 s; it is back after about 10 s.
+  * A lift manager crashing during a ride reconciles in 5.5 s.
+  * A robot that freezes inside the car past its lease is fenced on its stale epoch, resyncs and gets the car back.
+
+**Findings (90 robots, 3 minutes, mean of 2 seeds).** Lifts are the bottleneck. With 3 floors, throughput goes from 8 tasks/min with 1 lift to 21 with 2, 37 with 4, 43 with 6 and 53 with 8. The mean wait for a car falls from 8.5 s to 4.6 s. One floor manages 84 tasks/min, two floors with 4 lifts 57. A ride holds a car for about 3.5 s: drive in, ride, wait for the exit cell, drive out. Empty trips to the next waiter add more. So a lift moves about one robot every 4–5 s. The **Benchmark** (`B`) has these sweeps in section E.
