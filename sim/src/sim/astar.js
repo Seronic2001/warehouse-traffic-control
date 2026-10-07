@@ -1,13 +1,22 @@
 // A* over the grid. Search states are (cell, arrival direction, turned) so
 // turns can carry a small cost (clean straight runs, like real AGVs) and two
 // consecutive turns inside a crossing box — a U-turn — can be forbidden.
-import { W, H, RW, RH, RX, RF, NF, getLayout } from './layout.js';
+//
+// With lifts, a ride is an edge between two shaft cells of the same lift.
+// The arrival direction slot then encodes where a robot is in a lift trip:
+// 8 = start of the search, 9 = just arrived by car. A shaft can only be
+// entered from its bay's entry cell, a robot that drove in must ride, and
+// it leaves by the exit cell only after the ride.
+import { W, H, RW, RH, RX, RF, NF, LIFT_FLOOR_TICKS, rideTicks, getLayout } from './layout.js';
 
 const DX = [1, 0, -1, 0];
 const DY = [0, 1, 0, -1];
 const TURN_COST = 0.35;
 const WRONG_WAY_COST = 3;
 const STATION_COST = 8;
+const CELL_TICKS = 6; // a one-cell move (default cfg.moveTicks), to price rides in cells
+const RIDE_COST = (floors) => rideTicks(floors) / CELL_TICKS;
+const FLOOR_H = LIFT_FLOOR_TICKS / CELL_TICKS; // heuristic per floor apart
 
 // Search buffers, sized for the largest layout seen so far.
 let S = 0;
@@ -72,7 +81,7 @@ export function astar(start, goal, avoid, strict = true, regionCost = null, L = 
   ensure(L.N);
   stamp++;
   heapN = 0;
-  const gx = goal % W, gy = ((goal % NF) / W) | 0;
+  const gx = goal % W, gy = ((goal % NF) / W) | 0, gf = (goal / NF) | 0;
   const s0 = start * 10 + 8;
   g[s0] = 0;
   parent[s0] = -1;
@@ -94,12 +103,18 @@ export function astar(start, goal, avoid, strict = true, regionCost = null, L = 
     const base = c - (c % NF); // first cell of this floor
     const rbase = (base / NF) * RF;
     const x = c % W, y = ((c - base) / W) | 0;
+    const shaft = L.lift ? L.lift[c] : 0;
+    const sub = s % 10;
     for (let d = 0; d < 4; d++) {
       const nx = x + DX[d], ny = y + DY[d];
       if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
       const n = base + ny * W + nx;
       if (L.solid[n]) continue;
       if (n !== goal && avoid && avoid(n)) continue;
+      if (L.lift) {
+        if (shaft && ((sub !== 8 && sub !== 9) || n !== L.liftOut[c])) continue;
+        if (L.lift[n] && !shaft && c !== L.liftIn[n]) continue;
+      }
       if (DX[d] && L.noCrossH[c] && L.noCrossH[n]) continue;
       if (DY[d] && L.noCrossV[c] && L.noCrossV[n]) continue;
       const turn = dir !== 4 && dir !== d;
@@ -121,7 +136,24 @@ export function astar(start, goal, avoid, strict = true, regionCost = null, L = 
       seen[ns] = stamp;
       g[ns] = ng;
       parent[ns] = s;
-      push(ng + Math.abs(nx - gx) + Math.abs(ny - gy), ns);
+      push(ng + Math.abs(nx - gx) + Math.abs(ny - gy) + Math.abs(base / NF - gf) * FLOOR_H, ns);
+    }
+    // Ride the car to another floor.
+    if (shaft && sub !== 9) {
+      const f = base / NF;
+      const shafts = L.lifts[shaft - 1].shafts;
+      for (let f2 = 0; f2 < shafts.length; f2++) {
+        if (f2 === f) continue;
+        const n = shafts[f2];
+        if (n !== goal && avoid && avoid(n)) continue;
+        const ns = n * 10 + 9;
+        const ng = g[s] + RIDE_COST(Math.abs(f2 - f));
+        if (seen[ns] === stamp && g[ns] <= ng) continue;
+        seen[ns] = stamp;
+        g[ns] = ng;
+        parent[ns] = s;
+        push(ng + Math.abs(x - gx) + Math.abs(y - gy) + Math.abs(f2 - gf) * FLOOR_H, ns);
+      }
     }
   }
   return null;

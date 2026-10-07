@@ -7,6 +7,13 @@
 // run floor by floor (c = floor·NF + y·W + x), so with one floor every id is
 // exactly what it always was. Regions are numbered the same way: 16 per floor.
 // Packing stations are on the ground floor only.
+//
+// Floors are joined by lifts, at the same spot on every floor. Each lift sits
+// in the middle of an aisle, which becomes its lobby: six one-way cells,
+// shelves on both sides. A robot queues in the first two, drives from the
+// entry cell into the shaft, rides the car to another floor's shaft, and
+// leaves by that floor's exit cell. Queueing robots wait inside the lobby,
+// off the highways, and never meet robots leaving the car head-on.
 
 export const W = 48;
 export const H = 32;
@@ -21,6 +28,15 @@ const HWY_COLS = [1, 2, 11, 12, 23, 24, 35, 36, 45, 46];
 const HWY_ROWS = [1, 2, 7, 8, 15, 16, 23, 24, 29, 30];
 const STATION_ROWS = [4, 12, 19, 27];
 const STATION_COLS = [6, 18, 29, 41];
+// Lift lobbies, in the order they are added: [aisle column, first row].
+// Each spans six rows between two highways; spread so that two lifts sit
+// diagonally apart and four cover the middle of the floor.
+const LIFT_SPOTS = [[18, 9], [30, 17], [30, 9], [18, 17], [8, 9], [42, 17], [42, 9], [8, 17]];
+export const MAX_LIFTS = LIFT_SPOTS.length;
+// Car timing, in ticks: doors open and close once per ride, plus travel.
+export const LIFT_DOOR_TICKS = 8;
+export const LIFT_FLOOR_TICKS = 24;
+export const rideTicks = (floors) => LIFT_DOOR_TICKS + LIFT_FLOOR_TICKS * floors;
 
 export const cellOf = (x, y, f = 0) => f * NF + y * W + x;
 export const xOf = (c) => c % W;
@@ -31,10 +47,12 @@ export const fmtCell = (c) => (c >= NF ? `F${floorOf(c)}(${xOf(c)},${yOf(c)})` :
 
 const cached = new Map();
 
-// The layout for a warehouse with `floors` floors (cached).
-export function getLayout(floors = 1) {
-  let L = cached.get(floors);
-  if (!L) cached.set(floors, (L = floors === 1 ? buildFloor() : stack(buildFloor(), floors)));
+// The layout for a warehouse with `floors` floors and `lifts` lifts (cached).
+export function getLayout(floors = 1, lifts = 4) {
+  if (floors === 1) lifts = 0;
+  const key = `${floors}:${lifts}`;
+  let L = cached.get(key);
+  if (!L) cached.set(key, (L = floors === 1 ? buildFloor() : stack(buildFloor(), floors, Math.min(lifts, MAX_LIFTS))));
   return L;
 }
 
@@ -105,18 +123,9 @@ function buildFloor() {
   for (const x of STATION_COLS) {
     bays.push([x, 0, -1, 0, 0, -1], [x, H - 1, 1, 0, 0, 1]);
   }
-  for (const [x, y, fx, fy, nx, ny] of bays) {
-    const along = fx ? laneH : laneV;
-    const across = nx ? laneH : laneV;
-    const inward = nx || ny;
-    for (let k = -1; k <= 1; k++) {
-      const c = cellOf(x + fx * k, y + fy * k);
-      wall[c] = 0;
-      bay[c] = 1;
-      along[c] = fx || fy;
-      across[c] = k === 1 ? -inward : inward; // enter at k=-1 or 0, leave at k=1
-    }
-    const c = cellOf(x, y);
+  for (const b of bays) {
+    carveBay({ wall, bay, laneH, laneV }, b, 0);
+    const c = cellOf(b[0], b[1]);
     station[c] = 1;
     stations.push(c);
   }
@@ -148,12 +157,32 @@ function buildFloor() {
     if (nearShelf && !hwyRow.has(y) && !hwyCol.has(x)) pickups.push(c);
   }
 
-  return { W, H, N, NF, floors: 1, R: RF, RW, RH, RX, RY, shelf, wall, solid, station, bay, box, noCrossH, noCrossV, laneH, laneV, stations, pickups, free, aisleCols, hwyRows: HWY_ROWS, hwyCols: HWY_COLS };
+  return { W, H, N, NF, floors: 1, R: RF, RW, RH, RX, RY, shelf, wall, solid, station, bay, box, noCrossH, noCrossV, laneH, laneV, stations, pickups, free, aisleCols, hwyRows: HWY_ROWS, hwyCols: HWY_COLS, lifts: [], lift: null, liftIn: null, liftOut: null };
+}
+
+// A drive-through bay in the wall on floor f: [x, y, flow along the wall
+// (fx, fy), direction from the ring lane into the bay (nx, ny)]. Each bay
+// flows the same way as the ring lane beside it. Returns its three cells:
+// entry, middle, exit.
+function carveBay(L, [x, y, fx, fy, nx, ny], f) {
+  const along = fx ? L.laneH : L.laneV;
+  const across = nx ? L.laneH : L.laneV;
+  const inward = nx || ny;
+  const cells = [];
+  for (let k = -1; k <= 1; k++) {
+    const c = cellOf(x + fx * k, y + fy * k, f);
+    L.wall[c] = 0;
+    L.bay[c] = 1;
+    along[c] = fx || fy;
+    across[c] = k === 1 ? -inward : inward; // enter at k=-1 or 0, leave at k=1
+    cells.push(c);
+  }
+  return cells;
 }
 
 // Stack copies of one floor. Upper floors have no packing stations: their
 // station bays are plain wall.
-function stack(one, floors) {
+function stack(one, floors, nLifts) {
   const N = NF * floors;
   const L = { ...one, N, floors, R: RF * floors, stations: [], pickups: [], free: [] };
   for (const k of ['shelf', 'wall', 'solid', 'station', 'bay', 'box', 'noCrossH', 'noCrossV', 'laneH', 'laneV']) {
@@ -170,5 +199,35 @@ function stack(one, floors) {
     for (const c of one.pickups) L.pickups.push(f * NF + c);
     for (const c of one.free) L.free.push(f * NF + c);
   }
+  // Lifts. lift[c] = lift id + 1 on shaft cells; liftIn / liftOut give the
+  // lobby cells a robot may enter the shaft from and leave it to;
+  // lobby[c] = lift id + 1 on all six lobby cells. Lobby cells are not
+  // pickup spots or spawn spots, so the lobby stays clear for the lift.
+  L.lift = new Uint8Array(N);
+  L.lobby = new Uint8Array(N);
+  L.liftIn = new Int32Array(N).fill(-1);
+  L.liftOut = new Int32Array(N).fill(-1);
+  L.lifts = [];
+  for (let i = 0; i < nLifts; i++) {
+    const [x, y0] = LIFT_SPOTS[i];
+    const dir = one.laneV[cellOf(x, y0)]; // the aisle's one-way direction
+    const rows = [0, 1, 2, 3, 4, 5].map((k) => (dir > 0 ? y0 + k : y0 + 5 - k));
+    const lift = { id: i, x, y: rows[3], dir, rows, shafts: [], ins: [], outs: [], lobbies: [] };
+    for (let f = 0; f < floors; f++) {
+      const cells = rows.map((y) => cellOf(x, y, f));
+      const [, , cin, shaft, cout] = cells;
+      for (const c of cells) L.lobby[c] = i + 1;
+      L.lift[shaft] = i + 1;
+      L.liftIn[shaft] = cin;
+      L.liftOut[shaft] = cout;
+      lift.shafts.push(shaft);
+      lift.ins.push(cin);
+      lift.outs.push(cout);
+      lift.lobbies.push(cells);
+    }
+    L.lifts.push(lift);
+  }
+  L.pickups = L.pickups.filter((c) => !L.lobby[c]);
+  L.free = L.free.filter((c) => !L.lobby[c]);
   return L;
 }

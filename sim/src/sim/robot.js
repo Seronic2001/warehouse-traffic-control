@@ -2,7 +2,7 @@
 // through network messages (to region managers and other robots) and through
 // the world simulator's actuator (tryMove), which enforces fencing.
 import { astar } from './astar.js';
-import { regionOf, fmtCell, xOf, yOf, cellOf, floorOf, W, H } from './layout.js';
+import { regionOf, fmtCell, xOf, yOf, cellOf, floorOf, rideTicks, W, H } from './layout.js';
 
 const URGENT_RENEW_GAP = 4; // ticks
 
@@ -51,9 +51,17 @@ export class Robot {
     return this.loadStamp[r] < 0 || this.sim.tick - this.loadStamp[r] > 400 ? 0 : this.loads[r];
   }
 
-  // When this robot believes a lease that started at `start` runs out.
-  localExpiry(start) {
-    return start + Math.round(this.sim.cfg.leaseTicks * (1 + this.drift));
+  // When this robot believes a lease of `dur` ticks that started at `start`
+  // runs out. Car leases last longer than cell leases (they cover a ride).
+  localExpiry(start, dur = this.sim.cfg.leaseTicks) {
+    return start + Math.round(dur * (1 + this.drift));
+  }
+
+  // Ticks the move into `next` takes: a cell, or a whole lift ride.
+  moveTicks(next) {
+    const L = this.sim.layout;
+    if (L.lift && L.lift[next] && L.lift[this.cell]) return rideTicks(Math.abs(floorOf(next) - floorOf(this.cell)));
+    return this.sim.cfg.moveTicks;
   }
 
   reset(cell) {
@@ -181,7 +189,9 @@ export class Robot {
         if (this.leases.has(c)) continue;
         if (missing < 0) missing = c;
         this.request(c, cfg.mode === 'ordered');
-        if (cfg.mode !== 'ordered') break;
+        // Both shaft cells of a ride belong to the same lift manager, so they
+        // can be asked for together without breaking the global order.
+        if (cfg.mode !== 'ordered' && !(L.lift && L.lift[c])) break;
       }
     }
     if (missing >= 0) {
@@ -191,8 +201,9 @@ export class Robot {
     }
 
     const lease = this.leases.get(next);
-    if (lease.expiry - t < cfg.safetyMargin + cfg.moveTicks) {
-      // Too close to expiry to start a move safely: renew first.
+    if (lease.expiry - t < cfg.safetyMargin + this.moveTicks(next)) {
+      // Too close to expiry to start a move safely: renew first. Before a
+      // lift ride this matters most: there is no network in the shaft.
       this.renewSoon = true;
       this.lastHold = t;
       return;
@@ -231,6 +242,8 @@ export class Robot {
       while (n < p.length && L.box[p[n]]) n++;
       if (n < p.length) n++;
     }
+    // About to drive into a lift: the car (both shaft cells) first.
+    if (L.lift && L.lift[p[0]] && p.length > 1 && L.lift[p[1]]) n = 2;
     if (this.sim.cfg.mode === 'ordered') n = Math.max(n, this.sim.cfg.orderedLookahead);
     return Math.min(n, p.length);
   }
@@ -254,7 +267,7 @@ export class Robot {
     if (last !== undefined && t - last < this.sim.cfg.retryTicks) return;
     this.pending.set(c, t);
     if (!this.firstAsked.has(c)) this.firstAsked.set(c, t);
-    this.send('m' + this.sim.mgrOf(c), { type: 'REQ', robot: this.id, cell: c, prio: this.priority, tryOnly });
+    this.send('m' + this.sim.mgrOf(c), { type: 'REQ', robot: this.id, cell: c, prio: this.priority, tryOnly, floor: floorOf(this.cell) });
   }
 
   setWaiting(c) {
@@ -350,8 +363,9 @@ export class Robot {
           this.send('m' + this.sim.mgrOf(m.cell), { type: 'RELEASE', robot: this.id, cell: m.cell, epoch: m.epoch });
           return;
         }
-        const start = asked ?? m.expiry - sim.cfg.leaseTicks;
-        this.leases.set(m.cell, { epoch: m.epoch, expiry: this.localExpiry(start) });
+        const dur = m.dur ?? sim.cfg.leaseTicks;
+        const start = asked ?? m.expiry - dur;
+        this.leases.set(m.cell, { epoch: m.epoch, expiry: this.localExpiry(start, dur), dur });
         if (this.state === 'REJOIN' && m.cell === this.cell) {
           this.state = 'IDLE';
           sim.flag('rejoined');
@@ -401,7 +415,7 @@ export class Robot {
         this.renewSince = null;
         for (let i = 0; i < m.ok.length; i += 2) {
           const l = this.leases.get(m.ok[i]);
-          if (l && l.epoch === m.ok[i + 1]) l.expiry = this.localExpiry(m.sentAt);
+          if (l && l.epoch === m.ok[i + 1]) l.expiry = this.localExpiry(m.sentAt, l.dur);
         }
         for (let i = 0; i < m.lost.length; i += 2) {
           const cell = m.lost[i];
@@ -463,13 +477,14 @@ export class Robot {
   escapeCell() {
     const sim = this.sim;
     const L = sim.layout;
+    if (L.lift && L.lift[this.cell]) return -1; // nowhere to step aside inside a car
     const x = xOf(this.cell), y = yOf(this.cell);
     const opts = [];
     for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
       const nx = x + dx, ny = y + dy;
       if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
       const c = cellOf(nx, ny, floorOf(this.cell));
-      if (L.solid[c] || L.box[c] || L.station[c] || sim.physCount[c] > 0 || this.avoid.has(c)) continue;
+      if (L.solid[c] || L.box[c] || L.station[c] || (L.lift && L.lift[c]) || sim.physCount[c] > 0 || this.avoid.has(c)) continue;
       opts.push(c);
     }
     return opts.length ? opts[sim.rng.int(opts.length)] : -1;

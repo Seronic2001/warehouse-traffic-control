@@ -17,7 +17,7 @@ export class Network {
     sim.metrics.msgs++;
     let lost = loss > 0 && sim.rng.chance(loss);
     const at = sim.tick + Math.max(1, delayMin + sim.rng.int(delayMax - delayMin + 1));
-    if (sim.deadZones.length && (sim.isOffline(from) || sim.isOffline(to))) lost = true;
+    if ((sim.deadZones.length || sim.cars.length) && (sim.isOffline(from) || sim.isOffline(to))) lost = true;
     if (this.record) this.flights.push((msg.flight = { msg, t0: sim.tick, t1: at, lost }));
     if (sim.trace) msg.trace = sim.trace.onSend(msg, sim.tick, at, lost);
     if (lost) {

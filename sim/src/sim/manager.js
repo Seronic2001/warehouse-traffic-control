@@ -114,8 +114,17 @@ export class RegionManager {
     this.inq = [];
     this.view = emptyView(this.nRegions);
     this.outageRobots = new Set();
-    sim.event('mgrdown', `Region manager M${this.id} crashed: its reservation table for region ${this.id} is lost`, { mgr: this.id });
+    sim.event('mgrdown', this.crashText(), { mgr: this.id });
     sim.flag('mgrDown');
+  }
+
+  crashText() {
+    return `Region manager M${this.id} crashed: its reservation table for region ${this.id} is lost`;
+  }
+
+  // How long a lease from this manager lasts, in ticks.
+  leaseLen() {
+    return this.sim.cfg.leaseTicks;
   }
 
   restart() {
@@ -340,7 +349,7 @@ export class RegionManager {
     for (const { cell, epoch } of cells) {
       const e = this.entry(cell);
       if (e.owner === robot && e.epoch === epoch && e.state !== 'BLOCKED') {
-        e.expiry = t + this.sim.cfg.leaseTicks;
+        e.expiry = t + this.leaseLen();
         ok.push(cell, epoch);
       } else lost.push(cell, epoch);
     }
@@ -395,6 +404,12 @@ export class RegionManager {
       if (t - this.reconcileStart >= sim.cfg.reconcileTicks) this.finishReconcile();
       return;
     }
+    this.stepUp(t);
+  }
+
+  // One tick of an up-and-running manager: held cells, lease expiry, gossip.
+  stepUp(t) {
+    const sim = this.sim;
     for (const cell of this.held) {
       const e = this.entries.get(cell);
       if (e.owner >= 0 || e.state === 'BLOCKED') this.held.delete(cell);

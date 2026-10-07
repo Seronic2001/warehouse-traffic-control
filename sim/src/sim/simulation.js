@@ -2,15 +2,17 @@
 // ticks, delivers network messages, detects collisions (including head-on
 // swaps), and enforces fencing by rejecting moves carrying a stale epoch.
 import { Rng } from './rng.js';
-import { getLayout, regionOf, fmtCell, xOf, yOf, floorOf, cellOf } from './layout.js';
+import { getLayout, regionOf, fmtCell, xOf, yOf, floorOf, cellOf, rideTicks, LIFT_FLOOR_TICKS } from './layout.js';
 import { Network } from './network.js';
 import { RegionManager, fmtEpoch } from './manager.js';
+import { LiftManager } from './lift.js';
 import { Robot } from './robot.js';
 
 export const DEFAULTS = {
   seed: 42,
   robots: 120,
   floors: 1,
+  lifts: 4, // lifts joining the floors (ignored with one floor)
   mode: 'detect', // 'baseline' | 'detect' | 'ordered' | 'central'
   tickMs: 50,
   moveTicks: 6,
@@ -54,14 +56,20 @@ export class Simulation {
   constructor(cfg = {}, script = null) {
     this.cfg = { ...DEFAULTS, ...cfg };
     this.rng = new Rng(this.cfg.seed);
-    this.layout = getLayout(this.cfg.floors);
+    this.layout = getLayout(this.cfg.floors, this.cfg.lifts);
+    // Lift cars: physical, so they live in the world. A car is either parked
+    // at a floor or moving (empty when called, or carrying its rider).
+    this.cars = this.layout.lifts.map((l) => ({ id: l.id, floor: 0, moving: null }));
     this.tick = 0;
     this.net = new Network(this);
     this.managers = [];
     // Centralised mode: one coordinator (M0) owns every cell on the floor.
     this.central = this.cfg.mode === 'central';
     const nMgr = this.central ? 1 : this.layout.R;
+    // Lift managers come after the cell managers.
+    this.liftBase = nMgr;
     for (let i = 0; i < nMgr; i++) this.managers.push(new RegionManager(this, i));
+    for (const l of this.layout.lifts) this.managers.push(new LiftManager(this, nMgr + l.id, l));
     this.robots = [];
     this.physCount = new Uint16Array(this.layout.N);
     this.fenceEpoch = new Int32Array(this.layout.N);
@@ -83,6 +91,7 @@ export class Simulation {
       fenced: 0, waitTicks: 0, waits: 0, yields: 0, backoffs: 0,
       riskyMoves: 0, liveExpiries: 0, sensorHolds: 0,
       mgrMsgs: 0, mgrQueueTicks: 0, mgrPeak: 0,
+      rides: 0, liftWaits: 0, liftWaitTicks: 0,
     };
     this.waitHist = new Array(WAIT_BINS).fill(0);
     this.recovery = { crashOwnership: [], crashCleared: [], pauseResync: [], mgrReconcile: [] };
@@ -110,7 +119,28 @@ export class Simulation {
 
   // The manager that owns a cell.
   mgrOf(cell) {
+    const L = this.layout;
+    if (L.lift && L.lift[cell]) return this.liftBase + L.lift[cell] - 1;
     return this.central ? 0 : regionOf(cell);
+  }
+
+  // The lift manager calls its car to a floor (it drives the motor directly).
+  // A car never moves empty while anyone is inside the shaft.
+  callCar(id, floor) {
+    const car = this.cars[id];
+    if (car.moving || car.floor === floor) return;
+    if (this.layout.lifts[id].shafts.some((c) => this.physCount[c] > 0)) return;
+    car.moving = { from: car.floor, to: floor, t0: this.tick, t1: this.tick + LIFT_FLOOR_TICKS * Math.abs(floor - car.floor), rider: -1 };
+  }
+
+  stepCars() {
+    for (const car of this.cars) {
+      const mv = car.moving;
+      if (mv && mv.rider < 0 && this.tick >= mv.t1) {
+        car.floor = mv.to;
+        car.moving = null;
+      }
+    }
   }
 
   addRobot(cell) {
@@ -145,12 +175,13 @@ export class Simulation {
     for (const m of this.net.deliver(t)) {
       // A robot that drove into a dead zone while the message was in flight
       // never hears it.
-      if (this.deadZones.length && this.isOffline(m.to)) {
+      if ((this.deadZones.length || this.cars.length) && this.isOffline(m.to)) {
         this.net.drop(m);
         continue;
       }
       this.endpoint(m.to).receive(m);
     }
+    if (this.cars.length) this.stepCars();
     for (const mgr of this.managers) mgr.step();
 
     for (const r of this.robots) {
@@ -212,6 +243,31 @@ export class Simulation {
       }
       this.managers[this.mgrOf(to)].markOccupied(to, r.id);
     }
+    const L = this.layout;
+    if (L.lift && L.lift[to]) {
+      // Lift interlock: the car must be parked at this floor, doors open.
+      const car = this.cars[L.lift[to] - 1];
+      const at = floorOf(r.cell);
+      if (car.moving || car.floor !== at) {
+        this.metrics.fenced++;
+        this.event('fenced', `Lift L${car.id} refused R${r.id}: the car is not at floor ${at}`, { cell: to, robots: [r.id] });
+        this.flag('fenced');
+        return false;
+      }
+      if (L.lift[r.cell]) {
+        // A ride: robot and car move to the other floor together.
+        const dur = rideTicks(Math.abs(floorOf(to) - at));
+        r.motion = { from: r.cell, to, t0: t, start: t, t1: t + dur, h0: r.heading, h1: r.heading, ride: true };
+        car.moving = { from: at, to: floorOf(to), t0: t, t1: t + dur, rider: r.id };
+        if (this.mode !== 'baseline') {
+          const e = this.managers[this.mgrOf(to)].entries.get(to);
+          if (e && e.expiry - t < dur) this.metrics.riskyMoves++;
+        }
+        this.metrics.rides++;
+        this.setFootprint(r, [r.cell, to]);
+        return true;
+      }
+    }
     const dx = xOf(to) - xOf(r.cell), dy = yOf(to) - yOf(r.cell);
     const heading = Math.atan2(dx, dy);
     let turn = 0;
@@ -229,6 +285,11 @@ export class Simulation {
 
   arrive(r) {
     const to = r.motion.to;
+    if (r.motion.ride) {
+      const car = this.cars[this.layout.lift[to] - 1];
+      car.floor = floorOf(to);
+      car.moving = null;
+    }
     this.setFootprint(r, [to]);
     this.metrics.moves++;
     r.onArrive(to);
@@ -355,10 +416,13 @@ export class Simulation {
   }
 
   // Is this network address a robot behind a partition?
+  // Robots riding a lift are offline too: there is no Wi-Fi in the shaft.
   isOffline(addr) {
-    if (!this.deadZones.length || addr[0] !== 'r') return false;
+    if (addr[0] !== 'r') return false;
     const r = this.robots[+addr.slice(1)];
-    return !!r && this.deadZones.some((z) => this.inZone(z, r));
+    if (!r) return false;
+    if (r.motion?.ride) return true;
+    return this.deadZones.length > 0 && this.deadZones.some((z) => this.inZone(z, r));
   }
 
   recordOutage(robots) {
@@ -399,6 +463,12 @@ export class Simulation {
         }
       } else if (job.stage === 'blocked' && t - job.since >= this.cfg.clearAfter) {
         const cells = r.footprint;
+        if (r.motion?.ride) {
+          // The crew winches the stuck car to the floor it was heading for.
+          const car = this.cars[this.layout.lift[r.motion.to] - 1];
+          car.floor = floorOf(r.motion.to);
+          car.moving = null;
+        }
         this.setFootprint(r, []);
         r.removed = true;
         r.motion = null;
@@ -570,6 +640,8 @@ export class Simulation {
       mgrQueueMs: m.mgrMsgs ? (m.mgrQueueTicks * this.cfg.tickMs) / m.mgrMsgs : 0,
       outageRobots: this.outages.length ? this.outages.reduce((a, b) => a + b, 0) / this.outages.length : null,
       robots: this.robots.length,
+      rides: m.rides,
+      avgLiftWait: m.liftWaits ? (m.liftWaitTicks * this.cfg.tickMs) / 1000 / m.liftWaits : null,
       recoveryCounts: Object.fromEntries(Object.entries(this.recovery).map(([k, v]) => [k, v.length])),
     };
   }
