@@ -141,11 +141,13 @@ input { font: inherit; color: inherit; }
 .logo { width: 34px; height: 34px; flex: none; }
 .logo rect { fill: rgba(var(--ink), 0.085); stroke: rgba(var(--ink), 0.19); }
 .logo rect.lit { fill: var(--cyan); stroke: none; filter: drop-shadow(0 0 6px rgba(8, 145, 178, 0.7)); }
-.brand h1 { margin: 0; font-size: 16px; font-weight: 700; letter-spacing: -0.01em; white-space: nowrap; }
+.brand h1 { margin: 0; font-size: 16px; font-weight: 700; letter-spacing: -0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.brand > div { min-width: 0; }
 .brand p { margin: 1px 0 0; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .modes {
   display: flex;
+  flex: none;
   padding: 4px;
   gap: 4px;
   background: var(--panel);
@@ -158,7 +160,8 @@ input { font: inherit; color: inherit; }
   border: 0;
   background: transparent;
   border-radius: 9px;
-  padding: 6px 14px;
+  padding: 6px 11px;
+  white-space: nowrap;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -172,6 +175,8 @@ input { font: inherit; color: inherit; }
 .modes button.on small { color: var(--cyan); }
 .modes button[data-mode='baseline'].on { background: rgba(225, 29, 72, 0.12); box-shadow: inset 0 0 0 1px rgba(225, 29, 72, 0.4); }
 .modes button[data-mode='baseline'].on small { color: var(--red); }
+.modes button[data-mode='multi'].on { background: rgba(22, 163, 74, 0.12); box-shadow: inset 0 0 0 1px rgba(22, 163, 74, 0.4); }
+.modes button[data-mode='multi'].on small { color: var(--green); }
 
 .transport { display: flex; align-items: center; gap: 8px; flex: 1 1 0; justify-content: flex-end; }
 .icon {
@@ -862,3 +867,12 @@ body.touring.tour-dash .tour { bottom: 96px; }
 .floorbar button.on { background: rgba(8, 145, 178, 0.12); border-color: rgba(8, 145, 178, 0.4); color: var(--text); font-weight: 600; }
 .field.off { opacity: 0.45; }
 @media (max-width: 860px) { .floorbar { top: 150px; } }
+
+/* Five mode tabs: make room in the top bar on narrower screens. */
+@media (max-width: 1560px) {
+  .brand p { display: none; }
+  .tour-btn { font-size: 0; gap: 0; padding: 0 8px; }
+}
+@media (max-width: 1300px) {
+  .brand h1 { display: none; }
+}

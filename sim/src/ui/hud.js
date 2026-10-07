@@ -76,12 +76,22 @@ export class Hud {
       app.cfg.robots = v;
       $('out-robots').textContent = v;
     });
-    bind('in-floors', (v) => {
-      app.cfg.floors = v;
+    const showFloors = (v) => {
       $('out-floors').textContent = v;
       $('field-lifts').classList.toggle('off', v === 1);
       $('in-lifts').disabled = v === 1;
+    };
+    bind('in-floors', (v) => {
+      app.cfg.floors = v;
+      showFloors(v);
     });
+    // Mirror app.cfg.floors in the slider (after a tab switch).
+    this.syncFloorControls = () => {
+      const el = $('in-floors');
+      el.value = app.cfg.floors;
+      fill(el);
+      showFloors(app.cfg.floors);
+    };
     bind('in-lifts', (v) => {
       app.cfg.lifts = v;
       $('out-lifts').textContent = v;
@@ -182,7 +192,8 @@ export class Hud {
     this.prevCollisions = 0;
     $('feed-list').innerHTML = '';
     $('feed-count').textContent = '';
-    document.querySelectorAll('.modes button').forEach((b) => b.classList.toggle('on', b.dataset.mode === sim.cfg.mode));
+    const multi = sim.layout.floors > 1;
+    document.querySelectorAll('.modes button').forEach((b) => b.classList.toggle('on', b.dataset.mode === 'multi' ? multi : !multi && b.dataset.mode === sim.cfg.mode));
     document.querySelectorAll('.scn[data-scenario]').forEach((b) => b.classList.toggle('on', b.dataset.scenario === this.app.scenario));
     const base = sim.cfg.mode === 'baseline';
     $('hero-title').textContent = base ? 'Collisions (unprotected)' : 'Protected collisions';

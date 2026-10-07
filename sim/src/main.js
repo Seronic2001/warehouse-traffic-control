@@ -169,8 +169,17 @@ app.seek = (tick, fast = false) => {
   hud.onSeek(sim);
   scrubber.onHistory();
 };
+// The Multi-storey tab is leases + detection on several floors (3 unless a
+// floor count was already chosen); every other tab is a single floor.
 app.setMode = (mode) => {
-  app.cfg.mode = mode;
+  if (mode === 'multi') {
+    app.cfg.mode = 'detect';
+    if (app.cfg.floors < 2) app.cfg.floors = 3;
+  } else {
+    app.cfg.mode = mode;
+    app.cfg.floors = 1;
+  }
+  hud.syncFloorControls();
   if (app.tour?.active) app.tour.end();
   if (app.scenario) app.exitScenario(false);
   app.restart();
