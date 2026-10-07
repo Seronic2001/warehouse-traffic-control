@@ -7,7 +7,7 @@ import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeome
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 import { xOf, yOf, regionOf, fmtCell } from '../sim/layout.js';
-import { wx, wz, MANAGER_Y } from './warehouse.js';
+import { wx, wz } from './warehouse.js';
 import { theme } from './theme.js';
 
 const C = (hex, k = 1) => new THREE.Color(hex).multiplyScalar(k);
@@ -46,8 +46,12 @@ const MAX_MSGS = 900;
 const ARC_SEG = 10;
 
 export class LiveView {
-  constructor(scene, managers, resolution) {
+  constructor(scene, managers, resolution, central) {
     this.scene = scene;
+    // The coordinator nodes on show: the 16 region managers, or the single
+    // central server tower in centralised mode (see useNodes).
+    this.regionNodes = managers;
+    this.centralNode = central;
     this.managers = managers;
     this.group = new THREE.Group();
     scene.add(this.group);
@@ -212,17 +216,17 @@ export class LiveView {
     const sim = this.sim;
     const on = this.layers.load && sim.mode !== 'baseline';
     const hex = theme.status.wait;
-    for (const mesh of this.loadPlanes) {
-      const mgr = sim.managers[this.loadPlanes.indexOf(mesh)];
+    this.loadPlanes.forEach((mesh, i) => {
+      const mgr = sim.managers[sim.central ? 0 : i];
       mesh.visible = on && mgr.state === 'UP';
-      if (!mesh.visible) continue;
-      const u = mgr.owned.size / mgr.cap;
+      if (!mesh.visible) return;
+      const u = mgr.loadIn(i);
       const full = u >= sim.cfg.admitBelow;
       mesh.material.color.set(hex);
       mesh.material.opacity = Math.min(0.6, Math.max(0, (u - 0.05) / 0.35) * 0.6);
       mesh.children[0].material.color.set(hex);
       mesh.children[0].material.opacity = full ? 0.9 : 0;
-    }
+    });
   }
 
   updateZones(now) {
@@ -253,8 +257,14 @@ export class LiveView {
 
   // ───────────────────────────── construction ─────────────────────────────
 
+  useNodes(sim) {
+    this.managers = sim.central ? [this.centralNode] : this.regionNodes;
+    for (const n of [...this.regionNodes, this.centralNode]) if (!this.managers.includes(n)) n.group.visible = false;
+  }
+
   setSim(sim) {
     this.sim = sim;
+    this.useNodes(sim);
     this.lastSeq = 0;
     for (const c of this.callouts) c.obj.removeFromParent();
     this.callouts = [];
@@ -269,6 +279,7 @@ export class LiveView {
   // don't replay the effects of events that already happened.
   adoptSim(sim) {
     this.sim = sim;
+    this.useNodes(sim);
     this.lastSeq = sim.eventSeq;
     for (const b of sim.bursts) this.seenBursts.add(b);
     for (const c of this.callouts) c.obj.removeFromParent();
@@ -769,7 +780,7 @@ export class LiveView {
     const sim = this.sim;
     const vis = this.layers.managers;
     const sel = this.selected >= 0 ? sim.robots[this.selected] : null;
-    const selRegion = sel ? regionOf(sel.cell) : -1;
+    const selRegion = sel ? sim.mgrOf(sel.cell) : -1;
     for (const node of this.managers) {
       node.group.visible = vis && this.spot?.managers !== 'dim';
       if (!node.group.visible) continue;
@@ -778,7 +789,8 @@ export class LiveView {
       const hasBlocked = mgr.blocked.size > 0;
       const M = theme.manager;
       const base = hasBlocked ? M.blocked : node.id === selRegion ? M.selected : M.base;
-      const alert = this.alertPlanes[node.id];
+      // The central server's outage covers the whole floor.
+      const alerts = node.central ? this.alertPlanes : [this.alertPlanes[node.id]];
       if (mgr.state !== 'UP') {
         const down = mgr.state === 'DOWN';
         const hex = down ? theme.mgrState.down : theme.mgrState.reconciling;
@@ -791,14 +803,18 @@ export class LiveView {
         node.ring.rotation.z = now * 0.004;
         node.beamMat.opacity = 0.35;
         node.beamMat.color.set(hex);
-        node.group.position.y = MANAGER_Y + (down ? -0.25 : 0);
-        alert.visible = true;
-        alert.material.color.set(hex);
-        alert.material.opacity = (down ? 0.1 : 0.07) + blink * 0.08;
-        alert.children[0].material.color.set(hex);
+        node.group.position.y = node.baseY + (down ? -0.25 : 0);
+        for (const alert of alerts) {
+          alert.visible = true;
+          alert.material.color.set(hex);
+          alert.material.opacity = (down ? 0.1 : 0.07) + blink * 0.08;
+          alert.children[0].material.color.set(hex);
+          // One server owns the whole floor: no region borders.
+          alert.children[0].visible = !node.central;
+        }
         continue;
       }
-      alert.visible = false;
+      for (const alert of alerts) alert.visible = false;
       node.coreMat.opacity = 0.9;
       node.ring.rotation.z = 0;
       node.beamMat.color.set(theme.manager.base);
@@ -812,11 +828,11 @@ export class LiveView {
         node.ringMat.color.set(base);
       }
       node.ringMat.opacity = mode === 'dim' ? 0.08 : 0.25 + act * 0.6;
-      node.beamMat.opacity = mode === 'hi' ? 0.45 : mode === 'dim' ? 0.03 : M.beam;
+      node.beamMat.opacity = mode === 'hi' ? 0.45 : mode === 'dim' ? 0.03 : node.central ? 0.5 : M.beam;
       const pulse = mode === 'hi' ? 1.25 + 0.25 * Math.sin(now * 0.005 + node.id) : 1;
       node.ring.scale.setScalar((1 + act * 0.25) * pulse);
       node.core.rotation.y = now * 0.0004 + node.id;
-      node.group.position.y = MANAGER_Y + Math.sin(now * 0.0012 + node.id) * 0.06;
+      node.group.position.y = node.baseY + Math.sin(now * 0.0012 + node.id) * 0.06;
     }
   }
 
@@ -977,7 +993,8 @@ export class LiveView {
         if (this.spot?.managers === 'dim') continue;
         const st = mgr.state === 'DOWN' ? ' down' : mgr.state === 'RECONCILING' ? ' recon' : '';
         const load = this.layers.load && sim.mode !== 'baseline' ? `<small>${Math.round((mgr.owned.size / mgr.cap) * 100)}%</small>` : '';
-        const txt = mgr.state === 'DOWN' ? `M${node.id} · DOWN` : mgr.state === 'RECONCILING' ? `M${node.id} · reconciling ${mgr.reports?.size ?? 0}/${sim.robots.filter((r) => r.alive).length}` : `M${node.id}${load}`;
+        const name = node.central ? 'Central server M0' : `M${node.id}`;
+        const txt = mgr.state === 'DOWN' ? `${name} · DOWN` : mgr.state === 'RECONCILING' ? `${name} · reconciling ${mgr.reports?.size ?? 0}/${sim.robots.filter((r) => r.alive).length}` : `${name}${load}`;
         this.label('m' + node.id, `mlabel${this.spot?.managers === 'hi' ? ' hi' : ''}${st}`, txt, node.pos.x, node.group.position.y + 0.45, node.pos.z);
       }
     }

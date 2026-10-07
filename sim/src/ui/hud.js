@@ -323,7 +323,7 @@ export class Hud {
         <dt>Task</dt><dd>${task}</dd>
         <dt>Carrying</dt><dd>${r.carrying ? 'yes' : 'no'}</dd>
         <dt>Priority</dt><dd>${r.priority} <span style="color:var(--muted)">(${r.basePrio} + ${aging} aging)</span></dd>
-        <dt>Region</dt><dd>M${regionOf(r.cell)} · ${fmtCell(r.cell)}</dd>
+        <dt>Region</dt><dd>${sim.central ? `${regionOf(r.cell)} · server M0` : `M${regionOf(r.cell)}`} · ${fmtCell(r.cell)}</dd>
         <dt>Waiting for</dt><dd>${wait}</dd>
         ${offline ? `<dt>Network</dt><dd style="color:var(--red)">cut off · ${offline}</dd>` : ''}
       </dl>
@@ -348,7 +348,7 @@ export class Hud {
   }
 
   renderCell(sim, cell) {
-    const mgr = sim.managers[regionOf(cell)];
+    const mgr = sim.managers[sim.mgrOf(cell)];
     const e = mgr.entries.get(cell) || { state: 'FREE', owner: -1, epoch: 0, expiry: 0, queue: [] };
     const t = sim.tick;
     const ms = sim.cfg.tickMs;
@@ -360,7 +360,7 @@ export class Hud {
       this.inspectorKey = key;
       $('ins-body').innerHTML = `<div id="ins-dyn"></div>
         <div class="ins-actions">
-          <button class="ghost danger" data-act="crashmgr" data-id="${mgr.id}" title="Crash this region's manager: its table is lost and must be rebuilt">Crash manager M${mgr.id}</button>
+          <button class="ghost danger" data-act="crashmgr" data-id="${mgr.id}" title="${sim.central ? 'Crash the central server: the whole floor’s table is lost and must be rebuilt' : 'Crash this region’s manager: its table is lost and must be rebuilt'}">${sim.central ? 'Crash server' : `Crash manager M${mgr.id}`}</button>
           <button class="ghost danger" data-act="cutnet" data-x="${xOf(cell)}" data-y="${yOf(cell)}" title="Cut every robot in the 5×5 cells around here off the network for 8 s">Cut network here</button>
         </div>`;
     }
@@ -381,7 +381,9 @@ export class Hud {
       </dl>
       <p class="ins-note">${
         mgr.state !== 'UP'
-          ? 'This region\'s manager is down or rebuilding its table. No grants are issued until it has reconciled with the robots.'
+          ? sim.central
+            ? 'The central server is down or rebuilding its table. No grants are issued anywhere on the floor until it has reconciled with the robots.'
+            : 'This region\'s manager is down or rebuilding its table. No grants are issued until it has reconciled with the robots.'
           : e.state === 'BLOCKED'
             ? 'A lease expired while a robot was still physically inside. The cell stays out of service until the world sends an explicit Cleared event.'
             : 'Free → Reserved (lease + epoch) → Occupied → Free. A lease that expires while a robot is still inside sends the cell to Blocked.'

@@ -10,7 +10,7 @@ import { Robot } from './robot.js';
 export const DEFAULTS = {
   seed: 42,
   robots: 120,
-  mode: 'detect', // 'baseline' | 'detect' | 'ordered'
+  mode: 'detect', // 'baseline' | 'detect' | 'ordered' | 'central'
   tickMs: 50,
   moveTicks: 6,
   turnTicks: 2,
@@ -31,7 +31,7 @@ export const DEFAULTS = {
   clockDrift: 0, // max fraction each robot's clock runs fast or slow (0.05 = ±5%)
   mgrDownTicks: 80, // how long a crashed region manager stays down
   reconcileTicks: 30, // how long a restarted manager waits for robot reports
-  injectFailures: false, // benchmark: periodically crash/pause robots and managers
+  injectFailures: false, // benchmark: periodically crash/pause robots and managers ('managers': managers only)
   // Congestion control: managers gossip region loads; robots route around
   // crowded regions and don't dispatch themselves into full ones.
   congestion: true,
@@ -39,6 +39,11 @@ export const DEFAULTS = {
   crowdedAt: 0.3, // region load (leased cells / open cells) where routing starts to detour
   detourWeight: 6, // extra planning cost per cell, per unit of load above crowdedAt
   admitBelow: 0.32, // a robot won't pick a job in a region at or above this load
+  // Messages one coordinator process (a region manager, or the central
+  // server) can handle per tick. Every node gets the same hardware; excess
+  // messages wait in that node's inbox. 0 = unlimited.
+  mgrRate: 0,
+  centralDetectEvery: 8, // ticks between the central coordinator's cycle searches
 };
 
 const WAIT_BIN = 0.25; // seconds per wait-histogram bin
@@ -52,7 +57,10 @@ export class Simulation {
     this.tick = 0;
     this.net = new Network(this);
     this.managers = [];
-    for (let i = 0; i < this.layout.RX * this.layout.RY; i++) this.managers.push(new RegionManager(this, i));
+    // Centralised mode: one coordinator (M0) owns every cell on the floor.
+    this.central = this.cfg.mode === 'central';
+    const nMgr = this.central ? 1 : this.layout.RX * this.layout.RY;
+    for (let i = 0; i < nMgr; i++) this.managers.push(new RegionManager(this, i));
     this.robots = [];
     this.physCount = new Uint16Array(this.layout.N);
     this.fenceEpoch = new Int32Array(this.layout.N);
@@ -73,9 +81,11 @@ export class Simulation {
       collisions: 0, deadlocks: 0, resolved: 0, resolveTicks: 0, probes: 0,
       fenced: 0, waitTicks: 0, waits: 0, yields: 0, backoffs: 0,
       riskyMoves: 0, liveExpiries: 0, sensorHolds: 0,
+      mgrMsgs: 0, mgrQueueTicks: 0, mgrPeak: 0,
     };
     this.waitHist = new Array(WAIT_BINS).fill(0);
     this.recovery = { crashOwnership: [], crashCleared: [], pauseResync: [], mgrReconcile: [] };
+    this.outages = []; // robots cut off from their manager, per manager crash
 
     this.script = script;
     const keepClear = new Set(script?.keepClear || []);
@@ -97,13 +107,18 @@ export class Simulation {
     return this.cfg.mode;
   }
 
+  // The manager that owns a cell.
+  mgrOf(cell) {
+    return this.central ? 0 : regionOf(cell);
+  }
+
   addRobot(cell) {
     const r = new Robot(this, this.robots.length, cell);
     this.robots.push(r);
     this.physCount[cell]++;
     r.footprint = [cell];
     if (this.mode !== 'baseline') {
-      const e = this.managers[regionOf(cell)].place(cell, r.id);
+      const e = this.managers[this.mgrOf(cell)].place(cell, r.id);
       r.leases.set(cell, { epoch: e.epoch, expiry: e.expiry });
     }
     return r;
@@ -158,7 +173,7 @@ export class Simulation {
     const r = this.robots[m.robot];
     // Ground truth check: is this robot alive and physically where it says?
     if (!r.alive || r.motion || r.cell !== m.cell) return;
-    this.net.send('w', 'm' + regionOf(m.cell), { type: 'CLEARED', cell: m.cell, assignTo: r.id });
+    this.net.send('w', 'm' + this.mgrOf(m.cell), { type: 'CLEARED', cell: m.cell, assignTo: r.id });
   }
 
   // ───────────────────────────── physics ─────────────────────────────
@@ -194,7 +209,7 @@ export class Simulation {
         this.flag('fenced');
         return false;
       }
-      this.managers[regionOf(to)].markOccupied(to, r.id);
+      this.managers[this.mgrOf(to)].markOccupied(to, r.id);
     }
     const dx = xOf(to) - xOf(r.cell), dy = yOf(to) - yOf(r.cell);
     const heading = Math.atan2(dx, dy);
@@ -203,7 +218,7 @@ export class Simulation {
     r.motion = { from: r.cell, to, t0: t, start: t + turn, t1: t + turn + this.cfg.moveTicks, h0: r.heading, h1: heading };
     if (this.mode !== 'baseline') {
       // Ground truth: would this lease run out before the robot is inside?
-      const e = this.managers[regionOf(to)].entries.get(to);
+      const e = this.managers[this.mgrOf(to)].entries.get(to);
       if (e && e.expiry - t < turn + this.cfg.moveTicks) this.metrics.riskyMoves++;
     }
     r.heading = heading;
@@ -290,14 +305,16 @@ export class Simulation {
 
   // Benchmark failure injection: a robot crash, a robot pause and (less
   // often) a region-manager crash, spread over the run.
+  // With injectFailures === 'managers', only the manager crashes happen.
   injectFailures() {
     const t = this.tick;
+    const robotsToo = this.cfg.injectFailures !== 'managers';
     const live = () => this.robots.filter((r) => r.alive && !r.removed && !r.paused && r.leases.size > 1);
-    if (t % 300 === 150) {
+    if (robotsToo && t % 300 === 150) {
       const c = live();
       if (c.length) this.crashRobot(this.rng.pick(c).id);
     }
-    if (t % 300 === 0) {
+    if (robotsToo && t % 300 === 0) {
       const c = live();
       if (c.length) this.pauseRobot(this.rng.pick(c).id, Math.round(this.cfg.leaseTicks * 1.6));
     }
@@ -343,6 +360,10 @@ export class Simulation {
     return !!r && this.deadZones.some((z) => this.inZone(z, r));
   }
 
+  recordOutage(robots) {
+    this.outages.push(robots);
+  }
+
   recordRecovery(kind, ticks) {
     this.recovery[kind].push(ticks);
   }
@@ -367,7 +388,7 @@ export class Simulation {
     for (const job of this.maintenance) {
       const r = this.robots[job.robot];
       if (job.stage === 'down') {
-        const blocked = r.footprint.every((c) => this.managers[regionOf(c)].blocked.has(c));
+        const blocked = r.footprint.every((c) => this.managers[this.mgrOf(c)].blocked.has(c));
         if (blocked && this.mode !== 'baseline') {
           job.stage = 'blocked';
           job.since = t;
@@ -380,7 +401,7 @@ export class Simulation {
         this.setFootprint(r, []);
         r.removed = true;
         r.motion = null;
-        for (const c of cells) this.net.send('w', 'm' + regionOf(c), { type: 'CLEARED', cell: c, assignTo: -1 });
+        for (const c of cells) this.net.send('w', 'm' + this.mgrOf(c), { type: 'CLEARED', cell: c, assignTo: -1 });
         this.recordRecovery('crashCleared', t - r.crashTick);
         if (this.mode === 'baseline') this.event('cleared', `Crew removed R${r.id}`, { cell: cells[0], robots: [r.id] });
         this.burst('cleared', cells[0]);
@@ -393,7 +414,7 @@ export class Simulation {
         r.footprint = [];
         this.setFootprint(r, [spot]);
         if (this.mode !== 'baseline') {
-          const e = this.managers[regionOf(spot)].place(spot, r.id);
+          const e = this.managers[this.mgrOf(spot)].place(spot, r.id);
           r.leases.set(spot, { epoch: e.epoch, expiry: e.expiry });
         }
         this.event('respawn', `R${r.id} repaired and back in service at ${fmtCell(spot)}`, { cell: spot, robots: [r.id] });
@@ -407,7 +428,7 @@ export class Simulation {
     const L = this.layout;
     for (let i = 0; i < 50; i++) {
       const c = this.rng.pick(L.free);
-      const e = this.managers[regionOf(c)].entry(c);
+      const e = this.managers[this.mgrOf(c)].entry(c);
       if (this.physCount[c] === 0 && e.owner === -1 && e.state === 'FREE' && !e.queue.length) return c;
     }
     return -1;
@@ -439,7 +460,8 @@ export class Simulation {
     for (const r of pool) if (lower(r, victim)) victim = r;
     this.openCycles.set(key, { formed, detected: t });
     this.cycles.push({ robots: cycle.slice(), tick: t, victim: victim.id, key });
-    this.event('deadlock', `Probe from R${detector.id} returned: cycle ${cycle.map((i) => 'R' + i).join(' → ')} → R${cycle[0]}. R${victim.id} yields (priority ${victim.priority})`, { robots: cycle.slice(), victim: victim.id });
+    const by = detector.addr[0] === 'm' ? `Coordinator M${detector.id} found` : `Probe from R${detector.id} returned:`;
+    this.event('deadlock', `${by} cycle ${cycle.map((i) => 'R' + i).join(' → ')} → R${cycle[0]}. R${victim.id} yields (priority ${victim.priority})`, { robots: cycle.slice(), victim: victim.id });
     this.flag('deadlock');
     // If the victim can't release anything (it stands in the cell the robot
     // behind it wants), it is told to step aside instead of just cancelling.
@@ -539,6 +561,14 @@ export class Simulation {
       liveExpiriesPer1k: per1k(m.liveExpiries),
       ...this.waitStats(),
       recovery: Object.fromEntries(Object.entries(this.recovery).map(([k, v]) => [k, v.length ? (v.reduce((a, b) => a + b, 0) / v.length) * this.cfg.tickMs / 1000 : null])),
+      // Coordinator load: the busiest single node, and how long messages sat
+      // in a node's inbox because it was at capacity.
+      mgrNodes: this.managers.length,
+      mgrPeak: m.mgrPeak,
+      mgrBusiest: Math.max(...this.managers.map((mg) => mg.handled)) / ((this.tick * this.cfg.tickMs) / 1000 || 1),
+      mgrQueueMs: m.mgrMsgs ? (m.mgrQueueTicks * this.cfg.tickMs) / m.mgrMsgs : 0,
+      outageRobots: this.outages.length ? this.outages.reduce((a, b) => a + b, 0) / this.outages.length : null,
+      robots: this.robots.length,
       recoveryCounts: Object.fromEntries(Object.entries(this.recovery).map(([k, v]) => [k, v.length])),
     };
   }

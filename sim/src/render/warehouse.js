@@ -63,6 +63,7 @@ export function buildWarehouse(scene, L, renderer) {
   buildWalls(group, L);
   buildStations(group, L);
   const managers = buildManagerNodes(group);
+  const central = buildCentralNode(group);
   dimmable(floor.material, null);
   let current = 1;
   let target = 1;
@@ -91,10 +92,10 @@ export function buildWarehouse(scene, L, renderer) {
     themed.stationScreen.color.set(theme.station.screen[0]).multiplyScalar(theme.station.screen[1]);
     themed.stationLamp.color.set(theme.station.lamp[0]).multiplyScalar(theme.station.lamp[1]);
     themed.stationBelt.color.setHex(theme.station.belt);
-    for (const n of managers) n.beamMat.color.set(theme.manager.base);
+    for (const n of [...managers, central]) n.beamMat.color.set(theme.manager.base);
     applyDim();
   };
-  return { group, floor, managers, setDim, tickDim, applyTheme };
+  return { group, floor, managers, central, setDim, tickDim, applyTheme };
 }
 
 // ───────────────────────────── floor paint ─────────────────────────────
@@ -427,9 +428,45 @@ function buildManagerNodes(group) {
       beam.position.y = -(MANAGER_Y - 1.2) / 2 - 0.1;
       g.add(beam);
       group.add(g);
-      nodes.push({ id, group: g, core, ring, coreMat, ringMat, beamMat, pos: new THREE.Vector3(cx, MANAGER_Y, cz) });
+      nodes.push({ id, group: g, core, ring, coreMat, ringMat, beamMat, baseY: MANAGER_Y, pos: new THREE.Vector3(cx, MANAGER_Y, cz) });
     }
   return nodes;
+}
+
+// Centralised mode: one server tower over the middle of the floor, standing
+// in for all sixteen region managers. Same parts as a region node (core,
+// ring, beam), so the live view drives it the same way. Hidden until a
+// centralised run is shown.
+export const CENTRAL_Y = 8.2;
+
+function buildCentralNode(group) {
+  const g = new THREE.Group();
+  const cx = wx(W / 2 - 0.5), cz = wz(H / 2 - 0.5);
+  g.position.set(cx, CENTRAL_Y, cz);
+  const coreMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(theme.manager.base), transparent: true, opacity: 0.9 });
+  // A stack of three server blades.
+  const core = new THREE.Group();
+  const blade = new THREE.CylinderGeometry(1.5, 1.5, 0.3, 6);
+  for (let k = 0; k < 3; k++) {
+    const m = new THREE.Mesh(blade, coreMat);
+    m.position.y = (k - 1) * 0.46;
+    m.scale.setScalar(1 - Math.abs(k - 1) * 0.12);
+    core.add(m);
+  }
+  g.add(core);
+  const ringMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(theme.manager.base), transparent: true, opacity: 0.5 });
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(2.2, 0.06, 8, 64), ringMat);
+  ring.rotation.x = Math.PI / 2;
+  g.add(ring);
+  // The tower: a mast from the floor up to the server.
+  const beamMat = new THREE.MeshBasicMaterial({ color: theme.manager.base, transparent: true, opacity: theme.manager.beam });
+  const mastH = CENTRAL_Y - 0.7;
+  const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.32, mastH, 8), beamMat);
+  beam.position.y = -mastH / 2 - 0.7;
+  g.add(beam);
+  g.visible = false;
+  group.add(g);
+  return { id: 0, central: true, group: g, core, ring, coreMat, ringMat, beamMat, baseY: CENTRAL_Y, pos: new THREE.Vector3(cx, CENTRAL_Y, cz) };
 }
 
 export { cellOf };

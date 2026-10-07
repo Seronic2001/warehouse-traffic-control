@@ -21,6 +21,7 @@ npm run build      # static build in dist/ (any static host works)
 | `M` | **Message timeline** for the selected robot (also the **Timeline** button in the inspector). Each process the robot talks to gets a lane: itself, its region managers, the world, other robots. Each message is an arrow from sender to receiver; lost messages end in a ×. Above the robot's lane are the leases it believes it holds. A lease bar turns hatched once the robot's own clock says it has expired. Hover for details, toggle message kinds, and pick a 4/8/16 s window. |
 | `[` / `]` | **Rewind / forward 5 s.** The scrubber above the dock can drag to any earlier moment of the run. Marks on it show deadlocks, crashes, fencing, manager failures and partitions; click one to jump to 1 s before it. Playing on from an earlier moment replays the same future. Acting there (crash, freeze, cut the network) starts a new branch. |
 | `B` | **Benchmark** (runs on a pool of Web Workers, one per spare CPU core; about 25 s on an 8-core laptop): strategies vs density (collisions, throughput, deadlocks, time to resolve, wait distribution and p95, messages per move); the lease safety margin under a hostile network; recovery times after injected robot crashes, pauses and manager crashes; and congestion control on vs off over 10-minute runs. |
+| `C` | **Distributed vs centralised** (about 30 s on 8 cores, 56 runs). Races this design against a single central server that owns every cell, finds deadlocks by searching its whole wait-for graph, and knows every region's load exactly. Robots, leases, fencing, network and routing are identical. A scorecard marks each category *distributed better*, *close* or *centralised better*, computed from the runs. |
 | `Space` / `R` / `Esc` | Pause or resume / restart from the seed / close or exit |
 | `D` | Toggle light / dark theme (also the sun/moon button; the choice is remembered) |
 
@@ -87,3 +88,27 @@ A crashed manager loses its whole reservation table. On restart it increments an
 * Safety margin under a hostile network (20% loss, delay up to 300 ms, ±20% drift, 2 s leases) has a clear sweet spot. With no margin, robots lose about 22 leases per 1,000 moves. Around 0.6–0.8 s, losses drop to about 14 and throughput peaks. At 1.6 s, the margin eats most of the lease and robots can almost never move.
 * Recovery: a crashed robot's lease is taken back after about 2.7 s and its Blocked cell is cleared after about 7.3 s. A paused robot resyncs 0.3 s after waking. A crashed manager is granting again after about 4.3 s (4 s down plus reconciliation).
 * Ordered acquisition, as implemented here (queue for the next cell, then grab the rest of the segment all-or-nothing with backoff), works at low density but collapses at 200 robots from repeated backoff. That is worth discussing in the report rather than hiding.
+
+### Distributed vs centralised (`C`)
+
+The centralised baseline is `mode: 'central'`: one manager (M0) owns all cells, needs no gossip, and runs cycle detection on its full wait-for graph every 0.4 s (a cycle counts once any member has waited as long as a robot waits before probing, the same rule as the probes). `mgrRate` caps how many messages one coordinator node can handle per tick; extra messages wait in its inbox. It is 0 (unlimited) by default, so existing modes behave exactly as before.
+
+The **Centralised** mode tab runs it live. The 16 region-manager nodes are replaced by one server tower over the middle of the floor. Every request, grant and renewal flies to that tower. Crashing it from any cell's inspector turns the whole floor red until it has reconciled.
+
+Results (seeds 1–3, default settings):
+
+| Category | Distributed | Centralised | Verdict |
+|---|---|---|---|
+| Collisions | 0 | 0 | close |
+| Throughput, mean of 50–200 robots (unlimited server) | 96 | 96 | close |
+| p95 lease wait, 150 robots | 2.67 s | 2.83 s | close |
+| Deadlock resolution | 0.72 s | 0.84 s | close |
+| Messages per move, 150 robots | 8.8 | 7.6 | close (central is ahead, and further ahead at 200 robots: no probes or gossip) |
+| Busiest coordinator node, 200 robots | 114 msgs/s | 950 msgs/s | distributed |
+| Throughput at 200 robots when each node handles 600 msgs/s | 106 | 0 | distributed |
+| Per-node capacity needed for 90% throughput, 200 robots | 200 msgs/s | 800 msgs/s | distributed |
+| Robots cut off per coordinator crash (120 robots) | 14 | 120 | distributed |
+| Tasks lost to a coordinator crash every 45 s | 3% | 10% | distributed |
+| Recovery after a coordinator crash | 4.3 s | 4.3 s | close |
+
+In short, a fast enough central server matches the distributed design in normal operation and sends fewer messages. The distributed design wins on per-node load, on running with modest hardware, and on how much of the floor a crash takes down. Below about 800 msgs/s the central server suffers congestion collapse: renewals queue behind requests, leases run out, robots resync, and that adds even more traffic.

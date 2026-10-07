@@ -27,4 +27,5 @@ export const MODE_SERIES = {
   baseline: { hex: '#2a78d6', label: 'Baseline (no coordination)' },
   detect: { hex: '#eb6834', label: 'Leases + edge-chasing' },
   ordered: { hex: '#1baf7a', label: 'Ordered acquisition' },
+  central: { hex: '#8b5cf6', label: 'Centralised server' },
 };

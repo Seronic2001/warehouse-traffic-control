@@ -32,6 +32,7 @@
         <button data-mode="baseline" role="tab"><span>Baseline</span><small>no coordination</small></button>
         <button data-mode="detect" role="tab"><span>Leases + detection</span><small>edge-chasing</small></button>
         <button data-mode="ordered" role="tab"><span>Ordered acquisition</span><small>prevention</small></button>
+        <button data-mode="central" role="tab"><span>Centralised</span><small>one server</small></button>
       </div>
 
       <div class="transport">
@@ -207,6 +208,10 @@
         <span class="num">B</span>
         <span class="txt"><b>Benchmark</b><small>compare all three modes</small></span>
       </button>
+      <button class="scn bench" id="btn-compare">
+        <span class="num">C</span>
+        <span class="txt"><b>vs Centralised</b><small>distributed against one server</small></span>
+      </button>
     </nav>
 
     <!-- ── Replay scrubber ── -->
@@ -271,6 +276,25 @@
         <div class="bench-legend" id="bench-legend"></div>
         <div class="bench-grid" id="bench-grid"></div>
         <div class="bench-table" id="bench-table" hidden></div>
+      </div>
+    </div>
+
+    <!-- ── Distributed vs centralised ── -->
+    <div class="modal" id="compare" hidden>
+      <div class="modal-card">
+        <div class="modal-head">
+          <div>
+            <h2>Distributed vs centralised</h2>
+            <p>The same robots, leases, fencing epochs, network and congestion-aware routing, coordinated two ways: by this project's <b>16 region managers</b> with edge-chasing probes and load gossip, or by <b>one central server</b> that owns every cell, finds deadlocks by searching its whole wait-for graph, and knows every region's load exactly. It takes <b id="cmp-dur">about a minute</b>.</p>
+          </div>
+          <div class="modal-actions">
+            <button id="cmp-run" class="primary">Run comparison</button>
+            <button id="cmp-close" class="ghost" title="Close">×</button>
+          </div>
+        </div>
+        <div class="bench-progress" id="cmp-progress" hidden><div></div><span></span></div>
+        <div class="bench-legend" id="cmp-legend"></div>
+        <div class="bench-grid" id="cmp-grid"></div>
       </div>
     </div>
 

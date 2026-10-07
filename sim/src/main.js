@@ -14,6 +14,7 @@ import { buildWarehouse, wx, wz } from './render/warehouse.js';
 import { LiveView } from './render/live.js';
 import { Hud } from './ui/hud.js';
 import { Bench } from './ui/bench.js';
+import { Compare } from './ui/compare.js';
 import { Tour } from './ui/tour.js';
 import { Scrubber } from './ui/scrubber.js';
 import { Timeline } from './ui/timeline.js';
@@ -85,7 +86,7 @@ composer.addPass(new OutputPass());
 
 const warehouse = buildWarehouse(scene, layout, renderer);
 const resolution = new THREE.Vector2(window.innerWidth, window.innerHeight);
-const live = new LiveView(scene, warehouse.managers, resolution);
+const live = new LiveView(scene, warehouse.managers, resolution, warehouse.central);
 
 // ───────────────────────────── app state ─────────────────────────────
 
@@ -105,6 +106,7 @@ const tour = new Tour(app);
 app.tour = tour;
 if (import.meta.env.DEV) window.__app = app;
 const bench = new Bench(app);
+const compare = new Compare(app);
 const scrubber = new Scrubber(app);
 const timeline = new Timeline(app);
 app.timeline = timeline;
@@ -294,7 +296,7 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'Space') {
     e.preventDefault();
     app.togglePlay();
-  } else if (tour.active && ['1', '2', '3', '4', '5', 'b', 'B', 'r', 'R'].includes(e.key)) {
+  } else if (tour.active && ['1', '2', '3', '4', '5', 'b', 'B', 'c', 'C', 'r', 'R'].includes(e.key)) {
     return;
   } else if (e.key === '1') app.startScenario('deadlock');
   else if (e.key === '2') app.startScenario('crash');
@@ -302,6 +304,7 @@ window.addEventListener('keydown', (e) => {
   else if (e.key === '4') app.startScenario('manager');
   else if (e.key === '5') app.startScenario('partition');
   else if (e.key === 'b' || e.key === 'B') bench.open();
+  else if (e.key === 'c' || e.key === 'C') compare.open();
   else if (e.key === 't' || e.key === 'T') tour.active ? tour.end() : tour.start();
   else if (e.key === 'd' || e.key === 'D') app.toggleTheme();
   else if (tour.active && e.key === 'ArrowRight') tour.next();
@@ -313,6 +316,7 @@ window.addEventListener('keydown', (e) => {
   } else if (e.key === 'Escape') {
     if (tour.active) tour.end();
     else if (bench.isOpen) bench.close();
+    else if (compare.isOpen) compare.close();
     else if (timeline.open) timeline.close();
     else if (live.selected >= 0 || live.selectedCell >= 0) app.select(-1);
     else if (app.scenario) app.exitScenario();
@@ -414,6 +418,7 @@ onThemeChange(() => {
   hud.buildLegend();
   tour.refresh();
   bench.refresh();
+  compare.refresh();
   timeline.refresh();
   scrubber.refresh();
 });

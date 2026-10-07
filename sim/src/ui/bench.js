@@ -4,6 +4,7 @@
 //   C. recovery times after injected crashes, pauses and manager crashes
 import { MODE_SERIES } from '../render/palette.js';
 import { WAIT_BIN_SECONDS } from '../sim/simulation.js';
+import { runPool, poolSize } from './pool.js';
 
 const $ = (id) => document.getElementById(id);
 const MODES = ['baseline', 'detect', 'ordered'];
@@ -16,7 +17,6 @@ const MARGINS = [0, 4, 8, 12, 16, 24, 32]; // ticks
 const HOSTILE = { mode: 'detect', robots: 120, loss: 0.2, delayMin: 1, delayMax: 6, clockDrift: 0.2, leaseTicks: 40, renewEvery: 10 };
 const MARGIN_SEEDS = [1, 2];
 const FAIL_TICKS = 3600; // 3 minutes, a failure every 15 s
-const POOL_MAX = 8;
 const CONG_TICKS = 12000; // 10 minutes: congestion builds up slowly
 const CONG_DENSITIES = [100, 150, 200]; // workers; one core is always left for the page
 
@@ -51,7 +51,7 @@ export class Bench {
       $('bench-table-btn').textContent = t.hidden ? 'Table' : 'Charts';
       $('bench-grid').hidden = !t.hidden;
     });
-    const cores = Math.max(1, Math.min(POOL_MAX, (navigator.hardwareConcurrency || 2) - 1));
+    const cores = poolSize();
     $('bench-dur').textContent = cores > 5 ? `about 25 seconds on ${cores} CPU cores` : cores > 1 ? `under a minute on ${cores} CPU cores` : 'about two minutes';
     this.refresh();
   }
@@ -83,9 +83,6 @@ export class Bench {
     return jobs;
   }
 
-  // Runs the jobs on a pool of workers, one per spare CPU core. Each worker
-  // takes the next job as soon as it finishes one; the biggest jobs go first
-  // so no core is left with a long run at the end.
   run() {
     this.stop();
     this.results = new Map();
@@ -94,41 +91,26 @@ export class Bench {
     const prog = $('bench-progress');
     prog.hidden = false;
     prog.querySelector('div').style.width = '0%';
-    const jobs = this.jobs().sort((a, b) => b.ticks * b.cfg.robots - a.ticks * a.cfg.robots);
-    const cores = Math.max(1, Math.min(POOL_MAX, (navigator.hardwareConcurrency || 2) - 1, jobs.length));
-    prog.querySelector('span').textContent = `Starting ${cores} worker${cores === 1 ? '' : 's'}…`;
-    const t0 = performance.now();
-    let next = 0;
-    let done = 0;
-    this.pool = [];
-    const feed = (w) => {
-      if (next < jobs.length) w.postMessage({ job: jobs[next++] });
-    };
-    for (let i = 0; i < cores; i++) {
-      const w = new Worker(new URL('../sim/bench.worker.js', import.meta.url), { type: 'module' });
-      w.onmessage = (e) => {
-        this.results.set(e.data.id, e.data.summary);
-        done++;
-        prog.querySelector('div').style.width = `${(done / jobs.length) * 100}%`;
-        prog.querySelector('span').textContent = `${done} / ${jobs.length} runs · ${cores} worker${cores === 1 ? '' : 's'}`;
+    this.pool = runPool(this.jobs(), {
+      onResult: (id, summary, done, total) => {
+        this.results.set(id, summary);
+        prog.querySelector('div').style.width = `${(done / total) * 100}%`;
+        prog.querySelector('span').textContent = `${done} / ${total} runs · ${this.pool.cores} worker${this.pool.cores === 1 ? '' : 's'}`;
         this.draw();
-        if (done === jobs.length) {
-          const secs = ((performance.now() - t0) / 1000).toFixed(0);
-          prog.querySelector('span').textContent = `Done · seed ${this.app.cfg.seed}, ${jobs.length} runs on ${cores} worker${cores === 1 ? '' : 's'} in ${secs}s`;
-          $('bench-run').disabled = false;
-          $('bench-run').textContent = 'Run again';
-          $('bench-table-btn').disabled = false;
-          this.stop();
-        } else feed(w);
-      };
-      this.pool.push(w);
-      feed(w);
-    }
+      },
+      onDone: (secs, cores) => {
+        prog.querySelector('span').textContent = `Done · seed ${this.app.cfg.seed}, ${this.pool.total} runs on ${cores} worker${cores === 1 ? '' : 's'} in ${secs.toFixed(0)}s`;
+        $('bench-run').disabled = false;
+        $('bench-run').textContent = 'Run again';
+        $('bench-table-btn').disabled = false;
+      },
+    });
+    prog.querySelector('span').textContent = `Starting ${this.pool.cores} worker${this.pool.cores === 1 ? '' : 's'}…`;
   }
 
   stop() {
-    for (const w of this.pool || []) w.terminate();
-    this.pool = [];
+    this.pool?.stop();
+    this.pool = null;
   }
 
   // Sweep A value for a mode/density.
@@ -276,7 +258,7 @@ export class Bench {
   }
 }
 
-function section(title, note) {
+export function section(title, note) {
   const el = document.createElement('div');
   el.className = 'bench-section';
   el.innerHTML = `<h3>${title}</h3><p>${note}</p>`;
@@ -284,7 +266,7 @@ function section(title, note) {
 }
 
 // Small-multiple line chart with direct end labels and a hover tooltip.
-function lineChart({ title, note, xs, xFmt, tipX, xName, fmt, series }) {
+export function lineChart({ title, note, xs, xFmt, tipX, xName, fmt, series }) {
   const W = 320, H = 176, ml = 40, mr = 64, mt = 10, mb = 34;
   const iw = W - ml - mr, ih = H - mt - mb;
   let max = 0;

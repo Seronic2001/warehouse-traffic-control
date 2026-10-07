@@ -44,7 +44,7 @@ function stage(sim, x, y, nx, ny, goal, prio, opts = {}) {
 }
 
 function preGrant(sim, r, cell) {
-  const e = sim.managers[regionOf(cell)].place(cell, r.id, 'RESERVED');
+  const e = sim.managers[sim.mgrOf(cell)].place(cell, r.id, 'RESERVED');
   r.leases.set(cell, { epoch: e.epoch, expiry: e.expiry });
 }
 

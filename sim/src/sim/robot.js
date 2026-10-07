@@ -254,7 +254,7 @@ export class Robot {
     if (last !== undefined && t - last < this.sim.cfg.retryTicks) return;
     this.pending.set(c, t);
     if (!this.firstAsked.has(c)) this.firstAsked.set(c, t);
-    this.send('m' + regionOf(c), { type: 'REQ', robot: this.id, cell: c, prio: this.priority, tryOnly });
+    this.send('m' + this.sim.mgrOf(c), { type: 'REQ', robot: this.id, cell: c, prio: this.priority, tryOnly });
   }
 
   setWaiting(c) {
@@ -282,6 +282,9 @@ export class Robot {
   maybeProbe() {
     const t = this.sim.tick;
     const cfg = this.sim.cfg;
+    // Centralised mode: the coordinator sees the whole wait-for graph and
+    // finds cycles itself, so robots never probe.
+    if (cfg.mode === 'central') return;
     if (this.waitingFor < 0 || t - this.waitSince < cfg.probeAfter || t - this.lastProbe < cfg.probeEvery) return;
     this.lastProbe = t;
     this.sim.metrics.probes++;
@@ -322,13 +325,13 @@ export class Robot {
     if (this.renewSince === null) this.renewSince = t;
     this.lastRenew = t;
     this.renewSoon = false;
-    const byRegion = new Map();
+    const byMgr = new Map();
     for (const [cell, l] of this.leases) {
-      const r = regionOf(cell);
-      if (!byRegion.has(r)) byRegion.set(r, []);
-      byRegion.get(r).push({ cell, epoch: l.epoch });
+      const m = this.sim.mgrOf(cell);
+      if (!byMgr.has(m)) byMgr.set(m, []);
+      byMgr.get(m).push({ cell, epoch: l.epoch });
     }
-    for (const [r, cells] of byRegion) this.send('m' + r, { type: 'RENEW', robot: this.id, cells, sentAt: t });
+    for (const [m, cells] of byMgr) this.send('m' + m, { type: 'RENEW', robot: this.id, cells, sentAt: t });
   }
 
   // ───────────────────────────── messages ─────────────────────────────
@@ -344,7 +347,7 @@ export class Robot {
         this.pending.delete(m.cell);
         this.firstAsked.delete(m.cell);
         if (!this.wanted(m.cell)) {
-          this.send('m' + regionOf(m.cell), { type: 'RELEASE', robot: this.id, cell: m.cell, epoch: m.epoch });
+          this.send('m' + this.sim.mgrOf(m.cell), { type: 'RELEASE', robot: this.id, cell: m.cell, epoch: m.epoch });
           return;
         }
         const start = asked ?? m.expiry - sim.cfg.leaseTicks;
@@ -362,7 +365,7 @@ export class Robot {
       case 'RECONCILE': {
         // A restarted manager is rebuilding its table: report what we hold there.
         const cells = [];
-        for (const [cell, l] of this.leases) if (regionOf(cell) === m.mgr) cells.push(cell, l.epoch);
+        for (const [cell, l] of this.leases) if (this.sim.mgrOf(cell) === m.mgr) cells.push(cell, l.epoch);
         this.send('m' + m.mgr, { type: 'REPORT', robot: this.id, cells, at: this.cell, gen: m.gen });
         return;
       }
@@ -378,7 +381,7 @@ export class Robot {
         for (const [cell, l] of this.leases) {
           if (cell === this.cell || (cell === this.path[0] && !sim.layout.box[cell])) continue;
           this.leases.delete(cell);
-          this.send('m' + regionOf(cell), { type: 'RELEASE', robot: this.id, cell, epoch: l.epoch });
+          this.send('m' + this.sim.mgrOf(cell), { type: 'RELEASE', robot: this.id, cell, epoch: l.epoch });
         }
         this.yieldUntil = sim.tick + 2 + sim.rng.int(5);
         sim.metrics.backoffs++;
@@ -436,7 +439,7 @@ export class Robot {
     this.wasWanted = standing;
     const t = sim.tick;
     const c = this.waitCell;
-    this.send('m' + regionOf(c), { type: 'CANCEL', robot: this.id, cell: c });
+    this.send('m' + this.sim.mgrOf(c), { type: 'CANCEL', robot: this.id, cell: c });
     this.pending.delete(c);
     this.firstAsked.delete(c);
     this.avoid.set(c, t + 60);
@@ -478,13 +481,13 @@ export class Robot {
     for (const [cell, l] of this.leases) {
       if (this.wanted(cell)) continue;
       this.leases.delete(cell);
-      this.send('m' + regionOf(cell), { type: 'RELEASE', robot: this.id, cell, epoch: l.epoch });
+      this.send('m' + this.sim.mgrOf(cell), { type: 'RELEASE', robot: this.id, cell, epoch: l.epoch });
     }
     for (const cell of this.pending.keys()) {
       if (this.wanted(cell)) continue;
       this.pending.delete(cell);
       this.firstAsked.delete(cell);
-      this.send('m' + regionOf(cell), { type: 'CANCEL', robot: this.id, cell });
+      this.send('m' + this.sim.mgrOf(cell), { type: 'CANCEL', robot: this.id, cell });
     }
   }
 
@@ -512,7 +515,7 @@ export class Robot {
     const l = this.leases.get(from);
     if (l) {
       this.leases.delete(from);
-      this.send('m' + regionOf(from), { type: 'RELEASE', robot: this.id, cell: from, epoch: l.epoch });
+      this.send('m' + this.sim.mgrOf(from), { type: 'RELEASE', robot: this.id, cell: from, epoch: l.epoch });
     }
     if (this.rejoinAfterArrive) {
       this.rejoinAfterArrive = false;
@@ -535,7 +538,7 @@ export class Robot {
       return;
     }
     for (const [cell, l] of this.leases) {
-      if (cell !== this.cell) this.send('m' + regionOf(cell), { type: 'RELEASE', robot: this.id, cell, epoch: l.epoch });
+      if (cell !== this.cell) this.send('m' + this.sim.mgrOf(cell), { type: 'RELEASE', robot: this.id, cell, epoch: l.epoch });
     }
     this.leases.clear();
     this.clearWaiting();

@@ -811,3 +811,38 @@ body.touring.tour-dash .tour { bottom: 96px; }
 }
 :hover::-webkit-scrollbar-thumb { background-color: rgba(var(--ink), 0.28); }
 ::-webkit-scrollbar-thumb:active { background-color: rgba(var(--ink), 0.4); }
+
+/* ───────── distributed vs centralised ───────── */
+.cmp-score { grid-column: 1 / -1; padding: 14px 14px 10px; }
+.cmp-tally { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.cmp-tally div { border-radius: 10px; padding: 10px 12px; background: rgba(var(--ink), 0.035); display: flex; align-items: baseline; gap: 8px; }
+.cmp-tally b { font: 700 24px var(--mono); }
+.cmp-tally span { font-size: 12.5px; color: var(--text-2); }
+.cmp-tally .t-detect b { color: var(--green); }
+.cmp-tally .t-central b { color: var(--violet); }
+.cmp-score table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 12.5px; }
+.cmp-score th { text-align: left; color: var(--muted); font-weight: 600; font-size: 11.5px; padding: 6px 8px; border-bottom: 1px solid var(--line-2); white-space: nowrap; }
+.cmp-score th i { display: inline-block; width: 12px; height: 3px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+.cmp-score td { padding: 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.cmp-score td:nth-child(2), .cmp-score td:nth-child(3) { font: 500 12.5px var(--mono); white-space: nowrap; color: var(--text-2); }
+.cmp-score td.win { color: var(--text); font-weight: 700; }
+.cmp-score td b { display: block; font-weight: 600; }
+.cmp-score td small { display: block; color: var(--muted); font-size: 11.5px; margin-top: 2px; max-width: 380px; }
+.cmp-score tr.grp td { padding: 14px 8px 4px; font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); border-bottom: 0; }
+.cmp-score tbody:first-of-type tr.grp td { padding-top: 6px; }
+.vchip { display: inline-block; font-size: 11px; font-weight: 600; border-radius: 999px; padding: 2px 9px; white-space: nowrap; }
+.v-detect { background: rgba(22, 163, 74, 0.14); color: var(--green); }
+.v-close { background: rgba(var(--ink), 0.07); color: var(--text-2); }
+.v-central { background: rgba(124, 58, 237, 0.14); color: var(--violet); }
+.v-pending { background: rgba(var(--ink), 0.04); color: var(--muted); }
+@media (max-width: 700px) {
+  .cmp-score table, .cmp-score tbody, .cmp-score tr, .cmp-score td { display: block; }
+  .cmp-score thead { display: none; }
+  .cmp-score tr { border-bottom: 1px solid var(--line); padding: 6px 0; }
+  .cmp-score td { border: 0; padding: 2px 8px; }
+  .cmp-score td[data-l]::before { content: attr(data-l) ': '; font-family: Inter, sans-serif; color: var(--muted); font-weight: 500; }
+  .cmp-tally { gap: 6px; }
+  .cmp-tally div { flex-direction: column; gap: 0; padding: 8px; min-width: 0; }
+  .cmp-tally span { font-size: 11.5px; }
+  .cmp-tally b { font-size: 20px; }
+}
