@@ -22,6 +22,8 @@ const LIGHT = {
   station: { body: 0xdfe5ec, belt: 0x475569, screen: ['#0891b2', 1], lamp: ['#16a34a', 1] },
   fade: { to: 0xeef1f5, amount: 0.8 },
   manager: { base: '#2563eb', blocked: '#d97706', selected: '#0f172a', glow: false, beam: 0.25 },
+  // Lifts: light green; deeper green while a robot holds the car.
+  lift: { base: '#4ade80', held: '#16a34a', line: 'rgba(22,163,74,0.8)', fill: 'rgba(74,222,128,0.18)', lobby: '#dcf7e6' },
   robot: {
     body: 0x2f3742, dead: 0x9aa3ae, paused: 0x3d5a8a, skirt: 0x1b2028, disc: 0xaab3bf, eye: ['#ffffff', 1],
     dimBody: 0xd3d9e1, dimBand: 0xc5cdd7,
@@ -76,6 +78,7 @@ const DARK = {
   station: { body: 0x363b44, belt: 0x1d2026, screen: ['#6cb6cf', 1], lamp: ['#4fae7c', 1] },
   fade: { to: 0x15181d, amount: 0.8 },
   manager: { base: '#7896d6', blocked: '#e0a030', selected: '#ffffff', glow: false, beam: 0.25 },
+  lift: { base: '#86efac', held: '#4ade80', line: 'rgba(134,239,172,0.6)', fill: 'rgba(134,239,172,0.08)', lobby: '#24362c' },
   robot: {
     body: 0xd3d8df, dead: 0x4d535c, paused: 0x9db3d6, skirt: 0x2a2e35, disc: 0x8d95a0, eye: ['#ffffff', 1],
     dimBody: 0x2c3037, dimBand: 0x32363d,

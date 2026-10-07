@@ -4,6 +4,7 @@
 import { astar } from './astar.js';
 import { regionOf, fmtCell, xOf, yOf, cellOf, floorOf, rideTicks, W, H } from './layout.js';
 
+
 const URGENT_RENEW_GAP = 4; // ticks
 
 export class Robot {
@@ -602,8 +603,18 @@ export class Robot {
         if (this.loadOf(alt) < this.loadOf(pickup)) pickup = alt;
       }
     }
+    // Drop at one of the two nearest packing stations. With several floors
+    // the ground and first floor both have stations, and any job can end on
+    // either: the floor is drawn at random, then the two nearest stations
+    // on it are candidates.
     const px = xOf(pickup), py = yOf(pickup);
-    const near = [...L.stations].sort((a, b) => Math.abs(xOf(a) - px) + Math.abs(yOf(a) - py) - Math.abs(xOf(b) - px) - Math.abs(yOf(b) - py));
+    let stations = L.stations;
+    const stationFloors = [...new Set(stations.map(floorOf))];
+    if (stationFloors.length > 1) {
+      const f = sim.rng.pick(stationFloors);
+      stations = stations.filter((s) => floorOf(s) === f);
+    }
+    const near = [...stations].sort((a, b) => Math.abs(xOf(a) - px) + Math.abs(yOf(a) - py) - Math.abs(xOf(b) - px) - Math.abs(yOf(b) - py));
     this.task = { stage: 'pickup', pickup, dropoff: near[sim.rng.int(2)] };
     this.taskWait = 0;
     this.path = [];

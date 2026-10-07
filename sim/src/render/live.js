@@ -637,7 +637,7 @@ export class LiveView {
       l.car.position.y = y + 0.02;
       const mgr = sim.managers[sim.liftBase + i];
       const e = mgr.entries.get(sim.layout.lifts[i].shafts[0]);
-      const hex = mgr.state !== 'UP' ? theme.mgrState.down : e?.state === 'BLOCKED' ? M.blocked : e && e.owner >= 0 ? theme.status.moving : M.base;
+      const hex = mgr.state !== 'UP' ? theme.mgrState.down : e?.state === 'BLOCKED' ? M.blocked : e && e.owner >= 0 ? theme.lift.held : theme.lift.base;
       l.carMat.color.set(hex);
       l.frameMat.color.set(hex);
       l.carMat.opacity = e && e.owner >= 0 ? 0.35 : 0.18;
@@ -895,7 +895,7 @@ export class LiveView {
       const act = Math.min(1, mgr.activity / 6);
       const hasBlocked = mgr.blocked.size > 0;
       const M = theme.manager;
-      const base = hasBlocked ? M.blocked : node.id === selRegion ? M.selected : M.base;
+      const base = hasBlocked ? M.blocked : node.id === selRegion ? M.selected : node.lift !== undefined ? theme.lift.base : M.base;
       // The central server's outage covers the whole floor.
       const alerts = node.central ? this.alertPlanes : node.lift !== undefined ? [] : [this.alertPlanes[node.id]];
       if (mgr.state !== 'UP') {
@@ -924,7 +924,7 @@ export class LiveView {
       for (const alert of alerts) alert.visible = false;
       node.coreMat.opacity = 0.9;
       node.ring.rotation.z = 0;
-      node.beamMat.color.set(theme.manager.base);
+      node.beamMat.color.set(node.lift !== undefined ? theme.lift.base : theme.manager.base);
       const mode = this.spot?.managers || 'normal';
       const k = mode === 'dim' ? 0.15 : mode === 'hi' ? 1.8 : 1;
       if (M.glow) {

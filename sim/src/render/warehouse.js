@@ -3,13 +3,13 @@
 //
 // A multi-storey warehouse is drawn as a stack of storeys STOREY_H apart,
 // each with its own floor, racks, walls and region managers (stations only
-// on the ground floor), plus a glass shaft, a car and a manager node per
+// on the ground and first floor), plus a glass shaft, a car and a manager node per
 // lift. setLayout rebuilds the stack when the number of floors or lifts
 // changes; with one floor the scene is exactly the single-floor one.
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
-import { W, H, RW, RH, RX, RY, RF, NF, xOf, yOf, cellOf } from '../sim/layout.js';
+import { W, H, RW, RH, RX, RY, RF, NF, xOf, yOf, floorOf, cellOf } from '../sim/layout.js';
 import { theme } from './theme.js';
 
 export const wx = (x) => x - W / 2 + 0.5;
@@ -103,7 +103,7 @@ export function buildWarehouse(scene, L0, renderer) {
       }
       buildRacks(g, L, f);
       buildWalls(g, L, f);
-      if (f === 0) buildStations(g, L);
+      buildStations(g, L, f);
       dimmable(floor.material, null);
       group.add(g);
       api.storeys.push(g);
@@ -145,8 +145,12 @@ export function buildWarehouse(scene, L0, renderer) {
     themed.stationScreen?.color.set(theme.station.screen[0]).multiplyScalar(theme.station.screen[1]);
     themed.stationLamp?.color.set(theme.station.lamp[0]).multiplyScalar(theme.station.lamp[1]);
     themed.stationBelt?.color.setHex(theme.station.belt);
-    for (const n of [...api.managers, api.central, ...api.lifts.map((l) => l.node)]) n.beamMat.color.set(theme.manager.base);
-    for (const l of api.lifts) l.shaftMat.color.set(theme.manager.base);
+    for (const n of [...api.managers, api.central]) n.beamMat.color.set(theme.manager.base);
+    for (const l of api.lifts) {
+      l.node.beamMat.color.set(theme.lift.base);
+      l.shaftMat.color.set(theme.lift.base);
+      l.rails.material.color.set(theme.lift.base);
+    }
     applyDim();
   };
   return api;
@@ -176,7 +180,10 @@ function paintFloor(L, cv, f = 0) {
     } else if (L.shelf[c]) {
       g.fillStyle = F.shelf;
       g.fillRect(px, py, PX, PX);
-    } else if (L.bay[c] || (L.lobby && L.lobby[c])) {
+    } else if (L.lobby && L.lobby[c]) {
+      g.fillStyle = theme.lift.lobby;
+      g.fillRect(px, py, PX, PX);
+    } else if (L.bay[c]) {
       g.fillStyle = F.bay;
       g.fillRect(px, py, PX, PX);
     } else if (hwyRow.has(y) || hwyCol.has(x)) {
@@ -268,13 +275,13 @@ function paintFloor(L, cv, f = 0) {
   // lift shafts: a framed square with an up/down mark
   for (const l of L.lifts) {
     const px = l.x * PX, py = l.y * PX;
-    g.strokeStyle = F.stationLine;
+    g.strokeStyle = theme.lift.line;
     g.lineWidth = 4;
     roundRect(g, px + 5, py + 5, PX - 10, PX - 10, 6);
     g.stroke();
-    g.fillStyle = F.stationFill;
+    g.fillStyle = theme.lift.fill;
     g.fill();
-    g.fillStyle = F.stationLine;
+    g.fillStyle = theme.lift.line;
     const cx = px + PX / 2, s = PX * 0.14;
     for (const dir of [-1, 1]) {
       const cy = py + PX / 2 + dir * PX * 0.17;
@@ -288,7 +295,8 @@ function paintFloor(L, cv, f = 0) {
   }
 
   // station bays (ground floor only)
-  for (const c of f === 0 ? L.stations : []) {
+  for (const c of L.stations) {
+    if (floorOf(c) !== f) continue;
     const px = xOf(c) * PX, py = yOf(c) * PX;
     g.strokeStyle = F.stationLine;
     g.lineWidth = 3;
@@ -446,13 +454,15 @@ function buildWalls(group, L, f = 0) {
   group.add(armMesh, capMesh);
 }
 
-function buildStations(group, L) {
+function buildStations(group, L, f = 0) {
   const body = new RoundedBoxGeometry(1.6, 1.0, 2.6, 3, 0.08);
   const bodyMat = dimmable(new THREE.MeshStandardMaterial({ color: theme.station.body, roughness: 0.5, metalness: 0.2 }), 'station.body');
-  const screenMat = (themed.stationScreen = new THREE.MeshBasicMaterial({ color: new THREE.Color(theme.station.screen[0]).multiplyScalar(theme.station.screen[1]) }));
-  const beltMat = (themed.stationBelt = new THREE.MeshStandardMaterial({ color: theme.station.belt, roughness: 0.9 }));
-  const lampMat = (themed.stationLamp = new THREE.MeshBasicMaterial({ color: new THREE.Color(theme.station.lamp[0]).multiplyScalar(theme.station.lamp[1]) }));
+  // Station materials are shared by every floor, so the theme retints them once.
+  const screenMat = (themed.stationScreen ??= new THREE.MeshBasicMaterial({ color: new THREE.Color(theme.station.screen[0]).multiplyScalar(theme.station.screen[1]) }));
+  const beltMat = (themed.stationBelt ??= new THREE.MeshStandardMaterial({ color: theme.station.belt, roughness: 0.9 }));
+  const lampMat = (themed.stationLamp ??= new THREE.MeshBasicMaterial({ color: new THREE.Color(theme.station.lamp[0]).multiplyScalar(theme.station.lamp[1]) }));
   for (const c of L.stations) {
+    if (floorOf(c) !== f) continue;
     const x = xOf(c), y = yOf(c);
     let ox = 0, oz = 0, rot = 0;
     if (x === 0) (ox = -1.35), (rot = 0);
@@ -572,20 +582,20 @@ function buildLifts(group, L) {
     const g = new THREE.Group();
     const x = wx(l.x), z = wz(l.y);
     g.position.set(x, 0, z);
-    const shaftMat = new THREE.MeshBasicMaterial({ color: theme.manager.base, transparent: true, opacity: 0.13, depthWrite: false });
+    const shaftMat = new THREE.MeshBasicMaterial({ color: theme.lift.base, transparent: true, opacity: 0.16, depthWrite: false });
     const shaft = new THREE.Mesh(new THREE.BoxGeometry(0.96, shaftH, 0.96), shaftMat);
     shaft.position.y = shaftH / 2;
     g.add(shaft);
-    const rails = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(0.96, shaftH, 0.96)), new THREE.LineBasicMaterial({ color: theme.manager.base, transparent: true, opacity: 0.75 }));
+    const rails = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(0.96, shaftH, 0.96)), new THREE.LineBasicMaterial({ color: theme.lift.base, transparent: true, opacity: 0.85 }));
     rails.position.y = shaftH / 2;
     g.add(rails);
     // The car: a frame with a floor plate; tinted by its lease state.
     const car = new THREE.Group();
-    const carMat = new THREE.MeshBasicMaterial({ color: theme.manager.base, transparent: true, opacity: 0.22, depthWrite: false });
+    const carMat = new THREE.MeshBasicMaterial({ color: theme.lift.base, transparent: true, opacity: 0.22, depthWrite: false });
     const box = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.9, 0.9), carMat);
     box.position.y = 0.45;
     car.add(box);
-    const frameMat = new THREE.LineBasicMaterial({ color: theme.manager.base });
+    const frameMat = new THREE.LineBasicMaterial({ color: theme.lift.base });
     const frame = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(0.9, 0.9, 0.9)), frameMat);
     frame.position.y = 0.45;
     car.add(frame);
@@ -593,6 +603,7 @@ function buildLifts(group, L) {
     group.add(g);
     const node = managerNode(group, -1, x, shaftH + 0.6, z, coreGeo, ringGeo, beamGeo, -0.45);
     node.lift = l.id;
+    node.beamMat.color.set(theme.lift.base);
     out.push({ id: l.id, group: g, car, carMat, frameMat, shaftMat, rails, node, x, z });
   }
   return out;

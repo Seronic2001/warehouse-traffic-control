@@ -6,7 +6,7 @@
 // A warehouse can have several floors stacked on top of each other. Cell ids
 // run floor by floor (c = floor·NF + y·W + x), so with one floor every id is
 // exactly what it always was. Regions are numbered the same way: 16 per floor.
-// Packing stations are on the ground floor only.
+// Packing stations are on the ground floor and the first floor.
 //
 // Floors are joined by lifts, at the same spot on every floor. Each lift sits
 // in the middle of an aisle, which becomes its lobby: six one-way cells,
@@ -33,6 +33,7 @@ const STATION_COLS = [6, 18, 29, 41];
 // diagonally apart and four cover the middle of the floor.
 const LIFT_SPOTS = [[18, 9], [30, 17], [30, 9], [18, 17], [8, 9], [42, 17], [42, 9], [8, 17]];
 export const MAX_LIFTS = LIFT_SPOTS.length;
+export const STATION_FLOORS = 2; // ground and first floor have packing stations
 // Car timing, in ticks: doors open and close once per ride, plus travel.
 export const LIFT_DOOR_TICKS = 8;
 export const LIFT_FLOOR_TICKS = 24;
@@ -180,8 +181,8 @@ function carveBay(L, [x, y, fx, fy, nx, ny], f) {
   return cells;
 }
 
-// Stack copies of one floor. Upper floors have no packing stations: their
-// station bays are plain wall.
+// Stack copies of one floor. Floors from STATION_FLOORS up have no packing
+// stations: their station bays are plain wall.
 function stack(one, floors, nLifts) {
   const N = NF * floors;
   const L = { ...one, N, floors, R: RF * floors, stations: [], pickups: [], free: [] };
@@ -189,12 +190,12 @@ function stack(one, floors, nLifts) {
     L[k] = new one[k].constructor(N);
     for (let f = 0; f < floors; f++) L[k].set(one[k], f * NF);
   }
-  for (let c = NF; c < N; c++) {
+  for (let c = NF * STATION_FLOORS; c < N; c++) {
     if (!L.bay[c]) continue;
     L.bay[c] = L.station[c] = 0;
     L.wall[c] = L.solid[c] = 1;
   }
-  L.stations = one.stations.slice();
+  for (let f = 0; f < Math.min(floors, STATION_FLOORS); f++) for (const c of one.stations) L.stations.push(f * NF + c);
   for (let f = 0; f < floors; f++) {
     for (const c of one.pickups) L.pickups.push(f * NF + c);
     for (const c of one.free) L.free.push(f * NF + c);
