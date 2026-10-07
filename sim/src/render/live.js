@@ -6,8 +6,8 @@ import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
 import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
-import { xOf, yOf, regionOf, fmtCell } from '../sim/layout.js';
-import { wx, wz } from './warehouse.js';
+import { xOf, yOf, floorOf, fmtCell, RF } from '../sim/layout.js';
+import { wx, wz, levelOf } from './warehouse.js';
 import { theme } from './theme.js';
 
 const C = (hex, k = 1) => new THREE.Color(hex).multiplyScalar(k);
@@ -46,13 +46,14 @@ const MAX_MSGS = 900;
 const ARC_SEG = 10;
 
 export class LiveView {
-  constructor(scene, managers, resolution, central) {
+  constructor(scene, warehouse, resolution) {
     this.scene = scene;
-    // The coordinator nodes on show: the 16 region managers, or the single
-    // central server tower in centralised mode (see useNodes).
-    this.regionNodes = managers;
-    this.centralNode = central;
-    this.managers = managers;
+    // The coordinator nodes on show, indexed by manager id: the region
+    // managers (or the single central server tower in centralised mode),
+    // then one node per lift manager (see useNodes).
+    this.warehouse = warehouse;
+    this.managers = [];
+    this.view = -1; // floor on show, or -1 for every floor
     this.group = new THREE.Group();
     scene.add(this.group);
     this.layers = { reservations: true, waits: true, network: false, managers: true, labels: true, load: false };
@@ -79,7 +80,8 @@ export class LiveView {
     this.buildFx();
     this.buildTourFx();
     this.buildZones();
-    this.buildLoad();
+    this.buildLoad(16);
+    this.buildAlerts(16);
     this.applyTheme();
   }
 
@@ -155,15 +157,20 @@ export class LiveView {
     this.regionGroup.visible = false;
     this.group.add(this.regionGroup);
 
-    // Alert overlay for a region whose manager is down or reconciling.
+  }
+
+  // Alert overlay for a region whose manager is down or reconciling, one per
+  // region on every floor.
+  buildAlerts(R) {
+    for (const m of this.alertPlanes || []) m.removeFromParent();
     this.alertPlanes = [];
-    for (let id = 0; id < 16; id++) {
-      const i = id % 4, j = (id / 4) | 0;
+    for (let id = 0; id < R; id++) {
+      const i = id % 4, j = ((id % RF) / 4) | 0;
       const mesh = new THREE.Mesh(
         new THREE.PlaneGeometry(12 - 0.2, 8 - 0.2).rotateX(-Math.PI / 2),
         new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.15, depthWrite: false }),
       );
-      mesh.position.set(wx(i * 12 + 5.5), 0.03, wz(j * 8 + 3.5));
+      mesh.position.set(wx(i * 12 + 5.5), levelOf((id / RF) | 0) + 0.03, wz(j * 8 + 3.5));
       mesh.renderOrder = 1;
       mesh.visible = false;
       const edge = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.PlaneGeometry(12 - 0.2, 8 - 0.2).rotateX(-Math.PI / 2)), new THREE.LineBasicMaterial({ transparent: true }));
@@ -193,15 +200,16 @@ export class LiveView {
   }
 
   // Region load: each region tinted by how full its manager says it is.
-  buildLoad() {
+  buildLoad(R) {
+    for (const m of this.loadPlanes || []) m.removeFromParent();
     this.loadPlanes = [];
-    for (let id = 0; id < 16; id++) {
-      const i = id % 4, j = (id / 4) | 0;
+    for (let id = 0; id < R; id++) {
+      const i = id % 4, j = ((id % RF) / 4) | 0;
       const mesh = new THREE.Mesh(
         new THREE.PlaneGeometry(12 - 0.3, 8 - 0.3).rotateX(-Math.PI / 2),
         new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false }),
       );
-      mesh.position.set(wx(i * 12 + 5.5), 0.025, wz(j * 8 + 3.5));
+      mesh.position.set(wx(i * 12 + 5.5), levelOf((id / RF) | 0) + 0.025, wz(j * 8 + 3.5));
       mesh.renderOrder = 1;
       mesh.visible = false;
       const edge = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.PlaneGeometry(12 - 0.3, 8 - 0.3).rotateX(-Math.PI / 2)), new THREE.LineBasicMaterial({ transparent: true }));
@@ -218,7 +226,7 @@ export class LiveView {
     const hex = theme.status.wait;
     this.loadPlanes.forEach((mesh, i) => {
       const mgr = sim.managers[sim.central ? 0 : i];
-      mesh.visible = on && mgr.state === 'UP';
+      mesh.visible = on && mgr.state === 'UP' && this.showsFloor((i / RF) | 0);
       if (!mesh.visible) return;
       const u = mgr.loadIn(i);
       const full = u >= sim.cfg.admitBelow;
@@ -240,7 +248,8 @@ export class LiveView {
       const w = z.x1 - z.x0 + 1, d = z.y1 - z.y0 + 1;
       mesh.scale.set(w, 1, d);
       mesh.material.map.repeat.set(w, d);
-      mesh.position.set(wx((z.x0 + z.x1) / 2), 0.05, wz((z.y0 + z.y1) / 2));
+      mesh.visible = this.showsFloor(z.f);
+      mesh.position.set(wx((z.x0 + z.x1) / 2), levelOf(z.f) + 0.05, wz((z.y0 + z.y1) / 2));
       mesh.material.color.set(hex);
       mesh.material.opacity = 0.45 + blink * 0.25;
       mesh.children[0].material.color.set(hex);
@@ -257,9 +266,47 @@ export class LiveView {
 
   // ───────────────────────────── construction ─────────────────────────────
 
+  // Floor helpers: is floor f on show, and the height of a cell's floor.
+  showsFloor(f) {
+    return this.view < 0 || this.view === f;
+  }
+
+  showsCell(c) {
+    return this.view < 0 || floorOf(c) === this.view;
+  }
+
+  // The robot is on the floor on show (or riding to or from it).
+  showsRobot(r) {
+    if (this.view < 0) return true;
+    if (r.motion?.ride) return floorOf(r.motion.from) === this.view || floorOf(r.motion.to) === this.view;
+    return floorOf(r.cell) === this.view;
+  }
+
+  cellY(c) {
+    return levelOf(floorOf(c));
+  }
+
+  // Pick the nodes for this run's managers: region nodes or the central
+  // tower, then the lift nodes, each indexed by its manager id.
   useNodes(sim) {
-    this.managers = sim.central ? [this.centralNode] : this.regionNodes;
-    for (const n of [...this.regionNodes, this.centralNode]) if (!this.managers.includes(n)) n.group.visible = false;
+    const wh = this.warehouse;
+    if (wh.setLayout(sim.layout) || this.loadPlanes.length !== sim.layout.R) {
+      this.buildLoad(sim.layout.R);
+      this.buildAlerts(sim.layout.R);
+      for (const c of this.cordons) c.removeFromParent();
+      this.cordons = [];
+    }
+    if (this.view >= sim.layout.floors) this.view = -1;
+    wh.setView(this.view);
+    const lifts = wh.lifts.map((l) => l.node);
+    lifts.forEach((n, i) => (n.id = sim.liftBase + i));
+    this.managers = [...(sim.central ? [wh.central] : wh.managers), ...lifts];
+    for (const n of [...wh.managers, wh.central]) if (!this.managers.includes(n)) n.group.visible = false;
+  }
+
+  setView(view) {
+    this.view = view;
+    this.warehouse.setView(view);
   }
 
   setSim(sim) {
@@ -315,6 +362,7 @@ export class LiveView {
     body.name = 'robots';
     this.headings = new Float32Array(n);
     this.positions = new Float32Array(n * 2);
+    this.levels = new Float32Array(n); // height of each robot's floor (between floors mid-ride)
   }
 
   buildTiles() {
@@ -423,6 +471,10 @@ export class LiveView {
     return [this.positions[id * 2], this.positions[id * 2 + 1]];
   }
 
+  robotY(id) {
+    return this.levels[id];
+  }
+
   update(t, now, dt) {
     const sim = this.sim;
     if (!sim) return;
@@ -431,6 +483,7 @@ export class LiveView {
     for (const cy of sim.cycles) for (const id of cy.robots) this.cycleMembers.set(id, cy);
 
     this.updateRobots(t, now, dt);
+    this.updateLifts(t);
     this.updateTiles(t, now);
     this.updateArcs(t, now);
     this.updateMessages(t, now);
@@ -461,7 +514,7 @@ export class LiveView {
         const r = sim.robots[id];
         if (!r || r.removed || n >= 260) continue;
         const [x, y] = this.robotPos(id);
-        m.compose(p.set(wx(x), 0.03, wz(y)), q.identity(), s.set(sc, 1, sc));
+        m.compose(p.set(wx(x), this.robotY(id) + 0.03, wz(y)), q.identity(), s.set(sc, 1, sc));
         this.beaconMesh.setMatrixAt(n, m);
         this.beaconMesh.setColorAt(n++, col);
       }
@@ -483,6 +536,7 @@ export class LiveView {
       const [x, y] = sim.posOf(r, t);
       this.positions[i * 2] = x;
       this.positions[i * 2 + 1] = y;
+      const ly = (this.levels[i] = this.levelAt(r, t));
       // heading: rotate during the turn phase, then hold
       let h = r.heading;
       const mo = r.motion;
@@ -493,10 +547,10 @@ export class LiveView {
       this.headings[i] = h;
       const px = wx(x), pz = wz(y);
       q.setFromAxisAngle(up, h);
-      const sc = r.removed ? 0.0001 : 1;
+      const sc = r.removed || !this.showsRobot(r) ? 0.0001 : 1;
       s.set(sc, sc, sc);
       const place = (mesh, yy, scale = s) => {
-        m.compose(p.set(px, yy, pz), q, scale);
+        m.compose(p.set(px, ly + yy, pz), q, scale);
         mesh.setMatrixAt(i, m);
       };
       place(skirt, 0.065);
@@ -505,9 +559,9 @@ export class LiveView {
       place(disc, 0.318 + (r.carrying ? 0.03 : 0));
       // eye sits on the front face
       const fx = Math.sin(h) * 0.352, fz = Math.cos(h) * 0.352;
-      m.compose(p.set(px + fx, 0.22, pz + fz), q, s);
+      m.compose(p.set(px + fx, ly + 0.22, pz + fz), q, s);
       eye.setMatrixAt(i, m);
-      const ts = r.carrying && !r.removed ? 1 : 0.0001;
+      const ts = r.carrying && sc === 1 ? 1 : 0.0001;
       place(tote, 0.5, this.toteScale.set(ts, ts, ts));
 
       // status colour
@@ -538,15 +592,56 @@ export class LiveView {
     if (this.selected >= 0 && this.selected < n && !sim.robots[this.selected].removed) {
       const [x, y] = this.robotPos(this.selected);
       this.selRing.visible = true;
-      this.selRing.position.set(wx(x), 0.02, wz(y));
+      this.selRing.position.set(wx(x), this.robotY(this.selected) + 0.02, wz(y));
       const k = 1 + 0.06 * Math.sin(now * 0.006);
       this.selRing.scale.set(k, 1, k);
     } else this.selRing.visible = false;
 
     if (this.selectedCell >= 0) {
       this.cellCursor.visible = true;
-      this.cellCursor.position.set(wx(xOf(this.selectedCell)), 0.025, wz(yOf(this.selectedCell)));
+      this.cellCursor.position.set(wx(xOf(this.selectedCell)), this.cellY(this.selectedCell) + 0.025, wz(yOf(this.selectedCell)));
     } else this.cellCursor.visible = false;
+  }
+
+  // Height of a robot's floor at (fractional) tick t; mid-ride it moves with
+  // the car (and stops where the car stopped if the robot crashed inside).
+  levelAt(r, t) {
+    const mo = r.motion;
+    if (!mo || !mo.ride) return this.cellY(r.cell);
+    let tt = t;
+    if (!r.alive) tt = Math.min(tt, r.crashTick);
+    if (r.paused) tt = Math.min(tt, r.pauseTick ?? tt);
+    const k = Math.min(1, Math.max(0, (tt - mo.start) / (mo.t1 - mo.start)));
+    const a = this.cellY(mo.from), b = this.cellY(mo.to);
+    return a + (b - a) * easeInOut(k);
+  }
+
+  // Lift cars: at their floor, or travelling (with a rider, the rider's
+  // height). Tinted by the car lease: free, held, or out of service.
+  updateLifts(t) {
+    const sim = this.sim;
+    const wh = this.warehouse;
+    if (!wh.lifts.length) return;
+    const M = theme.manager;
+    wh.lifts.forEach((l, i) => {
+      const car = sim.cars[i];
+      let y = levelOf(car.floor);
+      const mv = car.moving;
+      if (mv) {
+        if (mv.rider >= 0) y = this.levelAt(sim.robots[mv.rider], t);
+        else {
+          const k = Math.min(1, Math.max(0, (t - mv.t0) / (mv.t1 - mv.t0)));
+          y = levelOf(mv.from) + (levelOf(mv.to) - levelOf(mv.from)) * easeInOut(k);
+        }
+      }
+      l.car.position.y = y + 0.02;
+      const mgr = sim.managers[sim.liftBase + i];
+      const e = mgr.entries.get(sim.layout.lifts[i].shafts[0]);
+      const hex = mgr.state !== 'UP' ? theme.mgrState.down : e?.state === 'BLOCKED' ? M.blocked : e && e.owner >= 0 ? theme.status.moving : M.base;
+      l.carMat.color.set(hex);
+      l.frameMat.color.set(hex);
+      l.carMat.opacity = e && e.owner >= 0 ? 0.35 : 0.18;
+    });
   }
 
   updateTiles(t, now) {
@@ -559,9 +654,9 @@ export class LiveView {
       for (const r of sim.robots) {
         if (!r.alive || r.removed || !this.overlayOn(r.id)) continue;
         for (const [cell] of r.leases) {
-          if (cell === r.cell || n >= MAX_TILES) continue;
+          if (cell === r.cell || n >= MAX_TILES || !this.showsCell(cell)) continue;
           const moving = r.motion && r.motion.to === cell;
-          m.makeTranslation(wx(xOf(cell)), 0.012, wz(yOf(cell)));
+          m.makeTranslation(wx(xOf(cell)), this.cellY(cell) + 0.012, wz(yOf(cell)));
           this.tileMesh.setMatrixAt(n, m);
           col.copy(moving ? P.tile.moving : P.tile.waiting);
           if (r.id === this.selected) col.copy(P.tile.selected);
@@ -573,8 +668,8 @@ export class LiveView {
     // the selected robot's own cell lease
     if (this.selected >= 0 && sim.mode !== 'baseline') {
       const r = sim.robots[this.selected];
-      if (r && r.leases.has(r.cell) && n < MAX_TILES) {
-        m.makeTranslation(wx(xOf(r.cell)), 0.012, wz(yOf(r.cell)));
+      if (r && r.leases.has(r.cell) && n < MAX_TILES && this.showsCell(r.cell)) {
+        m.makeTranslation(wx(xOf(r.cell)), this.cellY(r.cell) + 0.012, wz(yOf(r.cell)));
         this.tileMesh.setMatrixAt(n, m);
         this.tileMesh.setColorAt(n++, col.copy(P.tile.own));
       }
@@ -586,10 +681,10 @@ export class LiveView {
     // Blocked cells
     let b = 0;
     const blocked = [];
-    for (const mgr of sim.managers) for (const c of mgr.blocked) blocked.push(c);
+    for (const mgr of sim.managers) for (const c of mgr.blocked) if (this.showsCell(c)) blocked.push(c);
     for (const c of blocked) {
       if (b >= 128) break;
-      m.makeTranslation(wx(xOf(c)), 0.015, wz(yOf(c)));
+      m.makeTranslation(wx(xOf(c)), this.cellY(c) + 0.015, wz(yOf(c)));
       this.blockMesh.setMatrixAt(b++, m);
     }
     this.blockMesh.count = b;
@@ -602,7 +697,7 @@ export class LiveView {
     }
     this.cordons.forEach((l, i) => {
       l.visible = i < blocked.length;
-      if (l.visible) l.position.set(wx(xOf(blocked[i])), 0.25, wz(yOf(blocked[i])));
+      if (l.visible) l.position.set(wx(xOf(blocked[i])), this.cellY(blocked[i]) + 0.25, wz(yOf(blocked[i])));
     });
     this.blockedCells = blocked;
 
@@ -613,7 +708,8 @@ export class LiveView {
       if (r && !r.removed) {
         for (const c of r.path) {
           if (d >= 160) break;
-          m.makeTranslation(wx(xOf(c)), 0.02, wz(yOf(c)));
+          if (!this.showsCell(c)) continue;
+          m.makeTranslation(wx(xOf(c)), this.cellY(c) + 0.02, wz(yOf(c)));
           this.pathDots.setMatrixAt(d++, m);
         }
       }
@@ -622,12 +718,13 @@ export class LiveView {
     this.pathDots.instanceMatrix.needsUpdate = true;
   }
 
-  // Arc between two floor points, lifted in the middle.
-  arcPoint(ax, az, bx, bz, k, lift, out) {
+  // Arc between two floor points (on floors at heights ay and by), lifted in
+  // the middle.
+  arcPoint(ax, az, bx, bz, k, lift, out, ay = 0, by = 0) {
     const h = 0.55 + lift;
     out[0] = ax + (bx - ax) * k;
     out[2] = az + (bz - az) * k;
-    out[1] = 0.45 + 4 * h * k * (1 - k) * 0.5;
+    out[1] = ay + (by - ay) * k + 0.45 + 4 * h * k * (1 - k) * 0.5;
     return out;
   }
 
@@ -644,10 +741,11 @@ export class LiveView {
     for (const cy of sim.cycles) {
       for (let i = 0; i < cy.robots.length; i++) cycleEdges.add(cy.robots[i] * 4096 + cy.robots[(i + 1) % cy.robots.length]);
     }
+    let ay = 0, by = 0; // floor heights of the current arc's ends
     const push = (buf, idx, ax, az, bx, bz, lift, col) => {
       for (let k = 0; k < ARC_SEG; k++) {
-        this.arcPoint(ax, az, bx, bz, k / ARC_SEG, lift, a);
-        this.arcPoint(ax, az, bx, bz, (k + 1) / ARC_SEG, lift, b);
+        this.arcPoint(ax, az, bx, bz, k / ARC_SEG, lift, a, ay, by);
+        this.arcPoint(ax, az, bx, bz, (k + 1) / ARC_SEG, lift, b, ay, by);
         const o = (idx * ARC_SEG + k) * 6;
         buf.pos[o] = a[0]; buf.pos[o + 1] = a[1]; buf.pos[o + 2] = a[2];
         buf.pos[o + 3] = b[0]; buf.pos[o + 4] = b[1]; buf.pos[o + 5] = b[2];
@@ -658,8 +756,8 @@ export class LiveView {
     };
     const head = (ax, az, bx, bz, lift, col, scale) => {
       if (nh >= MAX_ARCS) return;
-      this.arcPoint(ax, az, bx, bz, 0.8, lift, a);
-      this.arcPoint(ax, az, bx, bz, 0.84, lift, b);
+      this.arcPoint(ax, az, bx, bz, 0.8, lift, a, ay, by);
+      this.arcPoint(ax, az, bx, bz, 0.84, lift, b, ay, by);
       const dir = new THREE.Vector3(b[0] - a[0], b[1] - a[1], b[2] - a[2]).normalize();
       q.setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir);
       m.compose(p.set(b[0], b[1], b[2]), q, s.set(scale, scale, scale));
@@ -675,8 +773,11 @@ export class LiveView {
         const isCycle = cycleEdges.has(r.id * 4096 + holder.id);
         if (!isCycle && sim.tick - r.waitSince < 10) continue;
         if (!this.overlayOn(r.id) && !this.overlayOn(holder.id)) continue;
+        if (!this.showsRobot(r) && !this.showsRobot(holder)) continue;
         const [x1, y1] = this.robotPos(r.id);
         const [x2, y2] = this.robotPos(holder.id);
+        ay = this.robotY(r.id);
+        by = this.robotY(holder.id);
         const ax = wx(x1), az = wz(y1), bx = wx(x2), bz = wz(y2);
         const dist = Math.hypot(bx - ax, bz - az);
         const lift = Math.min(1.2, dist * 0.18);
@@ -713,14 +814,17 @@ export class LiveView {
       if (k < 0 || k > 1) continue;
       const from = +f.msg.from.slice(1), to = +f.msg.to.slice(1);
       if (!this.overlayOn(from) && !this.overlayOn(to)) continue;
+      if (!this.showsRobot(sim.robots[from]) && !this.showsRobot(sim.robots[to])) continue;
       const [x1, y1] = this.robotPos(from);
       const [x2, y2] = this.robotPos(to);
+      ay = this.robotY(from);
+      by = this.robotY(to);
       const ax = wx(x1), az = wz(y1), bx = wx(x2), bz = wz(y2);
       const lift = Math.min(1.2, Math.hypot(bx - ax, bz - az) * 0.18) + 0.15;
       for (let tail = 0; tail < 4 && np < MAX_PROBES; tail++) {
         const kk = k - tail * 0.06;
         if (kk < 0) break;
-        this.arcPoint(ax, az, bx, bz, kk, lift, a);
+        this.arcPoint(ax, az, bx, bz, kk, lift, a, ay, by);
         const sc = 0.85 - tail * 0.17;
         m.compose(p.set(a[0], a[1], a[2]), q.identity(), s.set(sc, sc, sc));
         this.probeMesh.setMatrixAt(np, m);
@@ -736,12 +840,15 @@ export class LiveView {
     const k = addr[0];
     const id = +addr.slice(1);
     if (k === 'r') {
+      if (!this.showsRobot(this.sim.robots[id])) return false;
       const [x, y] = this.robotPos(id);
-      out.set(wx(x), 0.45, wz(y));
+      out.set(wx(x), this.robotY(id) + 0.45, wz(y));
       return true;
     }
     if (k === 'm') {
-      out.copy(this.managers[id].pos);
+      const node = this.managers[id];
+      if (!node || !node.group.visible) return false;
+      out.copy(node.pos);
       return true;
     }
     return false;
@@ -782,7 +889,7 @@ export class LiveView {
     const sel = this.selected >= 0 ? sim.robots[this.selected] : null;
     const selRegion = sel ? sim.mgrOf(sel.cell) : -1;
     for (const node of this.managers) {
-      node.group.visible = vis && this.spot?.managers !== 'dim';
+      node.group.visible = vis && this.spot?.managers !== 'dim' && (node.f === undefined || this.showsFloor(node.f));
       if (!node.group.visible) continue;
       const mgr = sim.managers[node.id];
       const act = Math.min(1, mgr.activity / 6);
@@ -790,7 +897,7 @@ export class LiveView {
       const M = theme.manager;
       const base = hasBlocked ? M.blocked : node.id === selRegion ? M.selected : M.base;
       // The central server's outage covers the whole floor.
-      const alerts = node.central ? this.alertPlanes : [this.alertPlanes[node.id]];
+      const alerts = node.central ? this.alertPlanes : node.lift !== undefined ? [] : [this.alertPlanes[node.id]];
       if (mgr.state !== 'UP') {
         const down = mgr.state === 'DOWN';
         const hex = down ? theme.mgrState.down : theme.mgrState.reconciling;
@@ -838,11 +945,11 @@ export class LiveView {
 
   // ───────────────────────────── bursts & callouts ─────────────────────────────
 
-  spawnBurst(x, z, color, size = 1, dur = 900) {
+  spawnBurst(x, z, color, size = 1, dur = 900, y = 0) {
     const mesh = this.burstPool.find((b) => !b.visible);
     if (!mesh) return;
     mesh.visible = true;
-    mesh.position.set(x, 0.03, z);
+    mesh.position.set(x, y + 0.03, z);
     mesh.material.color.copy(color);
     this.bursts.push({ mesh, born: this.now, dur, size });
   }
@@ -852,13 +959,15 @@ export class LiveView {
     for (const b of sim.bursts) {
       if (this.seenBursts.has(b)) continue;
       this.seenBursts.add(b);
-      let x, y;
-      if (b.cell >= 0) (x = xOf(b.cell)), (y = yOf(b.cell));
-      else (x = b.x), (y = b.y);
+      let x, y, f;
+      if (b.cell >= 0) (x = xOf(b.cell)), (y = yOf(b.cell)), (f = floorOf(b.cell));
+      else (x = b.x), (y = b.y), (f = b.f ?? 0);
+      if (!this.showsFloor(f)) continue;
       const color = P.burst[b.kind] || P.burst.other;
-      this.spawnBurst(wx(x), wz(y), color, b.kind === 'collision' ? 1.4 : 1.8);
+      const ly = levelOf(f);
+      this.spawnBurst(wx(x), wz(y), color, b.kind === 'collision' ? 1.4 : 1.8, 900, ly);
       if (b.kind === 'fenced' || b.kind === 'cleared') {
-        setTimeout(() => this.spawnBurst(wx(x), wz(y), color, 2.4, 1100), 160);
+        setTimeout(() => this.spawnBurst(wx(x), wz(y), color, 2.4, 1100, ly), 160);
       }
     }
     this.bursts = this.bursts.filter((b) => {
@@ -898,36 +1007,39 @@ export class LiveView {
         case 'mgrrestart':
         case 'reconciled': {
           const node = this.managers[e.mgr];
+          if (!node || (node.f !== undefined && !this.showsFloor(node.f))) break;
           const label = { mgrdown: `<b>M${e.mgr} DOWN</b> table lost`, mgrrestart: `<b>M${e.mgr} RESTARTED</b> reconciling…`, reconciled: `<b>M${e.mgr} RECONCILED</b> grants resume` }[e.kind];
-          this.addCallout(label, node.pos.x, node.pos.z, e.kind === 'mgrdown' ? 'collision' : e.kind === 'reconciled' ? 'cleared' : 'pause', now);
+          this.addCallout(label, node.pos.x, node.pos.z, e.kind === 'mgrdown' ? 'collision' : e.kind === 'reconciled' ? 'cleared' : 'pause', now, node.f === undefined ? node.pos.y - 1.2 : levelOf(node.f));
           break;
         }
         case 'deadlock': {
           if (!important && this.callouts.length > 3) break;
           text = `<b>DEADLOCK</b> ${e.robots.length}-cycle · R${e.victim} yields`;
+          if (!e.robots.some((id) => this.showsRobot(sim.robots[id]))) break;
           const pos = e.robots.map((id) => this.robotPos(id));
           const cx = pos.reduce((s, p) => s + p[0], 0) / pos.length;
           const cy = pos.reduce((s, p) => s + p[1], 0) / pos.length;
-          this.spawnBurst(wx(cx), wz(cy), P.burst.deadlock, 2.6, 1200);
-          this.addCallout(text, wx(cx), wz(cy), 'deadlock', now);
+          const ly = e.robots.reduce((s, id) => s + this.robotY(id), 0) / e.robots.length;
+          this.spawnBurst(wx(cx), wz(cy), P.burst.deadlock, 2.6, 1200, ly);
+          this.addCallout(text, wx(cx), wz(cy), 'deadlock', now, ly);
           text = null;
           break;
         }
       }
-      if (text && cell !== undefined && (important || this.callouts.length < 4)) {
-        this.addCallout(text, wx(xOf(cell)), wz(yOf(cell)), e.kind, now);
+      if (text && cell !== undefined && this.showsCell(cell) && (important || this.callouts.length < 4)) {
+        this.addCallout(text, wx(xOf(cell)), wz(yOf(cell)), e.kind, now, this.cellY(cell));
       }
     }
   }
 
-  addCallout(html, x, z, kind, now) {
+  addCallout(html, x, z, kind, now, base = 0) {
     const el = document.createElement('div');
     el.className = `callout callout-${kind}`;
     el.innerHTML = html;
     const obj = new CSS2DObject(el);
-    obj.position.set(x, 1.2, z);
+    obj.position.set(x, base + 1.2, z);
     this.group.add(obj);
-    this.callouts.push({ obj, born: now });
+    this.callouts.push({ obj, born: now, base });
     if (this.callouts.length > 7) this.callouts.shift().obj.removeFromParent();
   }
 
@@ -960,7 +1072,7 @@ export class LiveView {
         c.obj.removeFromParent();
         return false;
       }
-      c.obj.position.y = 1.2 + (now - c.born) / 2800 * 0.6;
+      c.obj.position.y = c.base + 1.2 + (now - c.born) / 2800 * 0.6;
       return true;
     });
 
@@ -971,10 +1083,10 @@ export class LiveView {
       const annotated = new Set(this.annotations.map((a) => a.robot).filter((x) => x !== undefined));
       for (const id of ids) {
         const r = sim.robots[id];
-        if (!r || r.removed || annotated.has(id)) continue;
+        if (!r || r.removed || annotated.has(id) || !this.showsRobot(r)) continue;
         const [x, y] = this.robotPos(id);
         const st = robotStatusKey(r, sim, this.cycleMembers);
-        this.label('r' + id, `rlabel st-${st}${id === this.selected ? ' sel' : ''}`, `<i></i>R${id}`, wx(x), 1.1, wz(y));
+        this.label('r' + id, `rlabel st-${st}${id === this.selected ? ' sel' : ''}`, `<i></i>R${id}`, wx(x), this.robotY(id) + 1.1, wz(y));
       }
       // blocked cells with the crew's countdown
       for (const c of this.blockedCells || []) {
@@ -984,23 +1096,27 @@ export class LiveView {
           const k = Math.min(1, (sim.tick - job.since) / sim.cfg.clearAfter);
           html = `<span class="pie" style="--k:${k}"></span>BLOCKED · crew ${(((1 - k) * sim.cfg.clearAfter * sim.cfg.tickMs) / 1000).toFixed(1)}s`;
         }
-        this.label('b' + c, 'blabel', html, wx(xOf(c)), 0.02, wz(yOf(c)) + 0.62);
+        this.label('b' + c, 'blabel', html, wx(xOf(c)), this.cellY(c) + 0.02, wz(yOf(c)) + 0.62);
       }
     }
     if (this.layers.managers) {
       for (const node of this.managers) {
         const mgr = sim.managers[node.id];
-        if (this.spot?.managers === 'dim') continue;
+        if (this.spot?.managers === 'dim' || !node.group.visible) continue;
         const st = mgr.state === 'DOWN' ? ' down' : mgr.state === 'RECONCILING' ? ' recon' : '';
-        const load = this.layers.load && sim.mode !== 'baseline' ? `<small>${Math.round((mgr.owned.size / mgr.cap) * 100)}%</small>` : '';
-        const name = node.central ? 'Central server M0' : `M${node.id}`;
+        // Every floor on show: region labels would bury the stack, so only
+        // lifts and managers in trouble are named.
+        if (this.view < 0 && node.f !== undefined && sim.layout.floors > 1 && !st) continue;
+        const load = this.layers.load && sim.mode !== 'baseline' && node.lift === undefined ? `<small>${Math.round((mgr.owned.size / mgr.cap) * 100)}%</small>` : '';
+        const name = node.central ? 'Central server M0' : node.lift !== undefined ? `Lift L${node.lift} · M${node.id}` : `M${node.id}`;
         const txt = mgr.state === 'DOWN' ? `${name} · DOWN` : mgr.state === 'RECONCILING' ? `${name} · reconciling ${mgr.reports?.size ?? 0}/${sim.robots.filter((r) => r.alive).length}` : `${name}${load}`;
         this.label('m' + node.id, `mlabel${this.spot?.managers === 'hi' ? ' hi' : ''}${st}`, txt, node.pos.x, node.group.position.y + 0.45, node.pos.z);
       }
     }
     for (const z of sim.deadZones) {
       const left = ((z.until - sim.tick) * sim.cfg.tickMs) / 1000;
-      this.label(`z${z.from}:${z.x0}:${z.y0}`, 'zlabel', `<i></i>NO NETWORK · ${left.toFixed(1)}s`, wx((z.x0 + z.x1) / 2), 0.05, wz(z.y0) - 0.5);
+      if (!this.showsFloor(z.f)) continue;
+      this.label(`z${z.from}:${z.x0}:${z.y0}`, 'zlabel', `<i></i>NO NETWORK · ${left.toFixed(1)}s`, wx((z.x0 + z.x1) / 2), levelOf(z.f) + 0.05, wz(z.y0) - 0.5);
     }
     if (this.showRegions) {
       const only = this.showRegions.only;
@@ -1016,9 +1132,9 @@ export class LiveView {
         const r = sim.robots[a.robot];
         if (!r || r.removed) continue;
         const [rx, ry] = this.robotPos(a.robot);
-        (x = wx(rx)), (y = 0.45), (z = wz(ry));
+        (x = wx(rx)), (y = this.robotY(a.robot) + 0.45), (z = wz(ry));
       } else if (a.cell !== undefined) {
-        (x = wx(xOf(a.cell))), (y = 0.05), (z = wz(yOf(a.cell)));
+        (x = wx(xOf(a.cell))), (y = this.cellY(a.cell) + 0.05), (z = wz(yOf(a.cell)));
       } else [x, y, z] = a.pos;
       const html = typeof a.html === 'function' ? a.html(sim) : a.html;
       if (!html) continue;

@@ -9,8 +9,8 @@ import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment
 
 import { Simulation, DEFAULTS } from './sim/simulation.js';
 import { SCENARIOS } from './sim/scenarios.js';
-import { getLayout, W, H } from './sim/layout.js';
-import { buildWarehouse, wx, wz } from './render/warehouse.js';
+import { getLayout, cellOf, W, H } from './sim/layout.js';
+import { buildWarehouse, wx, wz, levelOf } from './render/warehouse.js';
 import { LiveView } from './render/live.js';
 import { Hud } from './ui/hud.js';
 import { Bench } from './ui/bench.js';
@@ -86,7 +86,7 @@ composer.addPass(new OutputPass());
 
 const warehouse = buildWarehouse(scene, layout, renderer);
 const resolution = new THREE.Vector2(window.innerWidth, window.innerHeight);
-const live = new LiveView(scene, warehouse.managers, resolution, warehouse.central);
+const live = new LiveView(scene, warehouse, resolution);
 
 // ───────────────────────────── app state ─────────────────────────────
 
@@ -118,6 +118,7 @@ app.restart = () => {
 };
 
 app.attach = (sim) => {
+  const relaid = warehouse.layout !== sim.layout;
   app.sim = sim;
   sim.net.record = true;
   sim.trace = new Trace();
@@ -128,6 +129,8 @@ app.attach = (sim) => {
   app.follow = false;
   hud.onSim(sim);
   scrubber.onSim();
+  // A different number of floors or lifts: frame the new building.
+  if (relaid && !app.scenario) flyHome();
 };
 
 // One tick, through history so recorded actions replay and checkpoints are kept.
@@ -176,7 +179,8 @@ app.setMode = (mode) => {
 app.startScenario = (key, opts = {}) => {
   const sc = SCENARIOS[key];
   const { maxBackground, ...over } = sc.cfg;
-  const cfg = { ...app.cfg, ...over, robots: Math.min(app.cfg.robots, maxBackground ?? 999) };
+  // Scenarios are scripted on a single floor.
+  const cfg = { ...app.cfg, ...over, floors: 1, robots: Math.min(app.cfg.robots, maxBackground ?? 999) };
   app.scenario = key;
   app.ctx = { start: 0, step: 0, shownAt: 0 };
   app.attach(new Simulation(cfg, sc));
@@ -205,8 +209,17 @@ app.select = (robot, cell = -1) => {
   hud.onSelect();
 };
 
-app.focusCell = (x, y, dist = 14) => flyTo(new THREE.Vector3(wx(x), 0, wz(y)), dist, 0.85);
-app.flyTo = (x, y, dist, polar = 0.85, azimuth = null, dur = 1500) => flyTo(new THREE.Vector3(wx(x), 0, wz(y)), dist, polar, azimuth, dur);
+// Show every floor (-1) or just one, and frame it.
+app.setFloorView = (view) => {
+  live.setView(view);
+  hud.syncFloors();
+  flyHome();
+};
+
+// Camera moves to a cell on the floor on show (the ground floor in "All").
+const viewY = () => levelOf(Math.max(0, live.view));
+app.focusCell = (x, y, dist = 14) => flyTo(new THREE.Vector3(wx(x), viewY(), wz(y)), dist, 0.85);
+app.flyTo = (x, y, dist, polar = 0.85, azimuth = null, dur = 1500) => flyTo(new THREE.Vector3(wx(x), viewY(), wz(y)), dist, polar, azimuth, dur);
 app.flyHome = () => flyHome();
 app.fitDistance = (polar = 0.74) => fitDistance(polar);
 app.setDim = (k) => warehouse.setDim(k);
@@ -241,8 +254,14 @@ function fitDistance(polar = 0.74) {
   const byDepth = ((H / 2 + 3) * Math.cos(polar) + 1.5 * Math.sin(polar)) / (vh * 0.86);
   return THREE.MathUtils.clamp(Math.max(byWidth, byDepth), 28, 90);
 }
+// Frame the floor on show, or the whole stack of floors from lower down
+// so the gaps between storeys are visible.
 function flyHome() {
-  flyTo(new THREE.Vector3(0, 0, 1.5), fitDistance(), 0.74, -0.12, 1600);
+  const floors = app.sim?.layout.floors ?? 1;
+  if (floors > 1 && live.view < 0) {
+    const top = levelOf(floors - 1);
+    flyTo(new THREE.Vector3(0, top / 2, 1.5), fitDistance(1.05) + top * 1.1, 1.05, -0.35, 1600);
+  } else flyTo(new THREE.Vector3(0, levelOf(Math.max(0, live.view)), 1.5), fitDistance(), 0.74, -0.12, 1600);
 }
 controls.addEventListener('start', () => {
   tween = null;
@@ -269,7 +288,6 @@ function updateTween(now) {
 
 const ray = new THREE.Raycaster();
 const ndc = new THREE.Vector2();
-const floorPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 let down = null;
 renderer.domElement.addEventListener('pointerdown', (e) => {
   down = { x: e.clientX, y: e.clientY };
@@ -278,13 +296,18 @@ renderer.domElement.addEventListener('pointerup', (e) => {
   if (!down || Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5 || e.button !== 0) return;
   ndc.set((e.clientX / window.innerWidth) * 2 - 1, -(e.clientY / window.innerHeight) * 2 + 1);
   ray.setFromCamera(ndc, camera);
+  live.rm.body.boundingSphere = null; // robots move between floors
   const hits = ray.intersectObject(live.rm.body, false);
-  const hit = hits.find((h) => !app.sim.robots[h.instanceId]?.removed);
+  const hit = hits.find((h) => !app.sim.robots[h.instanceId]?.removed && live.showsRobot(app.sim.robots[h.instanceId]));
   if (hit) return app.select(hit.instanceId);
-  const p = new THREE.Vector3();
-  if (ray.ray.intersectPlane(floorPlane, p)) {
+  // The nearest floor on show under the pointer.
+  const floors = warehouse.floors.filter((m) => m.parent.visible);
+  const fh = ray.intersectObjects(floors, false)[0];
+  if (fh) {
+    const p = fh.point, f = fh.object.userData.f;
     const x = Math.floor(p.x + W / 2), y = Math.floor(p.z + H / 2);
-    if (x >= 0 && y >= 0 && x < W && y < H && !layout.solid[y * W + x]) return app.select(-1, y * W + x);
+    const c = cellOf(x, y, f);
+    if (x >= 0 && y >= 0 && x < W && y < H && !app.sim.layout.solid[c]) return app.select(-1, c);
   }
   app.select(-1);
 });
@@ -326,6 +349,12 @@ window.addEventListener('keydown', (e) => {
   } else if (e.key === '[' && !tour.active) app.seek(app.sim.tick - 100);
   else if (e.key === ']' && !tour.active) app.seek(app.sim.tick + 100);
   else if ((e.key === 'm' || e.key === 'M') && !tour.active) timeline.toggle();
+  else if ((e.key === 'v' || e.key === 'V') && !tour.active && app.sim.layout.floors > 1) {
+    // Cycle the floor view: all floors, then each floor from the top.
+    const n = app.sim.layout.floors;
+    const order = [-1, ...[...Array(n).keys()].reverse()];
+    app.setFloorView(order[(order.indexOf(live.view) + 1) % order.length]);
+  }
 });
 
 // ───────────────────────────── resize ─────────────────────────────
@@ -375,7 +404,7 @@ function frame(now) {
 
   if (app.follow && live.selected >= 0) {
     const [x, y] = live.robotPos(live.selected);
-    followTarget.set(wx(x), 0, wz(y));
+    followTarget.set(wx(x), live.robotY(live.selected), wz(y));
     const delta = followTarget.clone().sub(controls.target).multiplyScalar(0.08);
     controls.target.add(delta);
     camera.position.add(delta);

@@ -846,3 +846,19 @@ body.touring.tour-dash .tour { bottom: 96px; }
   .cmp-tally span { font-size: 11.5px; }
   .cmp-tally b { font-size: 20px; }
 }
+
+/* ───────── floor view (multi-storey) ───────── */
+.floorbar {
+  position: fixed; top: 84px; left: 50%; transform: translateX(-50%); z-index: 5;
+  display: flex; align-items: center; gap: 4px; padding: 4px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+  backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+  box-shadow: 0 6px 24px rgba(var(--shade), calc(0.1 * var(--shade-k)));
+}
+.floorbar[hidden] { display: none; }
+.floorbar span { font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); padding: 0 6px 0 8px; }
+.floorbar button { font-size: 12.5px; padding: 5px 11px; border-radius: 8px; border: 1px solid transparent; background: none; color: var(--text-2); }
+.floorbar button:hover { background: rgba(var(--ink), 0.05); }
+.floorbar button.on { background: rgba(8, 145, 178, 0.12); border-color: rgba(8, 145, 178, 0.4); color: var(--text); font-weight: 600; }
+.field.off { opacity: 0.45; }
+@media (max-width: 860px) { .floorbar { top: 150px; } }

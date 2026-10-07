@@ -65,6 +65,7 @@ export class Compare {
     delete base.robots;
     delete base.seed;
     base.mgrRate = 0;
+    base.floors = 1;
     base.injectFailures = false;
     const jobs = [];
     for (const mode of MODES) {

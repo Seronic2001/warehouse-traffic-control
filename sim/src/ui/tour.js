@@ -76,7 +76,7 @@ export class Tour {
     if (!force && !app.scenario && this.ownSim === app.sim) return;
     app.scenario = null;
     app.ctx = null;
-    app.attach(new Simulation({ ...app.cfg, mode: 'detect', robots: 120 }));
+    app.attach(new Simulation({ ...app.cfg, mode: 'detect', robots: 120, floors: 1 }));
     for (let i = 0; i < 1200; i++) app.step();
     this.ownSim = app.sim;
   }

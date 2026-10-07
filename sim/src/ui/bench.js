@@ -75,6 +75,7 @@ export class Bench {
     const base = { ...this.app.cfg };
     delete base.mode;
     delete base.robots;
+    base.floors = 1; // these sweeps are about one floor
     const jobs = [];
     for (const n of DENSITIES) for (const mode of MODES) jobs.push({ id: `A:${mode}:${n}`, cfg: { ...base, mode, robots: n }, ticks: SWEEP_A_TICKS });
     for (const m of MARGINS) for (const seed of MARGIN_SEEDS) jobs.push({ id: `B:${m}:${seed}`, cfg: { ...base, ...HOSTILE, safetyMargin: m, seed }, ticks: SWEEP_A_TICKS });

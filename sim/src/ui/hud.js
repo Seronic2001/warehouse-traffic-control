@@ -3,7 +3,7 @@
 import { STATUS, EVENT_COLORS } from '../render/palette.js';
 import { theme } from '../render/theme.js';
 import { robotStatusKey } from '../render/live.js';
-import { xOf, yOf, regionOf, fmtCell, cellOf } from '../sim/layout.js';
+import { xOf, yOf, floorOf, regionOf, fmtCell, cellOf } from '../sim/layout.js';
 import { fmtEpoch } from '../sim/manager.js';
 
 const $ = (id) => document.getElementById(id);
@@ -75,6 +75,16 @@ export class Hud {
     bind('in-robots', (v) => {
       app.cfg.robots = v;
       $('out-robots').textContent = v;
+    });
+    bind('in-floors', (v) => {
+      app.cfg.floors = v;
+      $('out-floors').textContent = v;
+      $('field-lifts').classList.toggle('off', v === 1);
+      $('in-lifts').disabled = v === 1;
+    });
+    bind('in-lifts', (v) => {
+      app.cfg.lifts = v;
+      $('out-lifts').textContent = v;
     });
     bind('in-delay', (v) => {
       app.cfg.delayMin = Math.max(1, v - 1);
@@ -158,7 +168,7 @@ export class Hud {
       else if (act === 'timeline') app.timeline.toggle(true);
       else if (act === 'robot') app.select(+b.dataset.id);
       else if (act === 'crashmgr') app.act('crashManager', +b.dataset.id);
-      else if (act === 'cutnet') app.act('cutNetwork', +b.dataset.x, +b.dataset.y, 2, 160);
+      else if (act === 'cutnet') app.act('cutNetwork', +b.dataset.x, +b.dataset.y, 2, 160, +b.dataset.f);
       this.onSelect();
     });
   }
@@ -180,7 +190,26 @@ export class Hud {
     $('inspector').hidden = true;
     document.querySelector('.right-col').classList.remove('has-inspector');
     this.syncTransport();
+    this.syncFloors();
     this.lastUpdate = 0;
+  }
+
+  // The floor-view bar: All, then one button per floor (multi-storey only).
+  syncFloors() {
+    const sim = this.app.sim;
+    const bar = $('floorbar');
+    const n = sim.layout.floors;
+    bar.hidden = n === 1;
+    if (n === 1) return;
+    const view = this.app.live.view;
+    const name = (f) => (f === 0 ? 'Ground' : `Floor ${f}`);
+    const want = `<span>Show</span><button data-view="-1">All floors</button>` + [...Array(n).keys()].reverse().map((f) => `<button data-view="${f}">${name(f)}</button>`).join('');
+    if (bar.dataset.n !== String(n)) {
+      bar.innerHTML = want;
+      bar.dataset.n = n;
+      bar.querySelectorAll('button').forEach((b) => b.addEventListener('click', () => this.app.setFloorView(+b.dataset.view)));
+    }
+    bar.querySelectorAll('button').forEach((b) => b.classList.toggle('on', +b.dataset.view === view));
   }
 
   // After a rewind: rebuild the event log from the restored simulation.
@@ -323,7 +352,7 @@ export class Hud {
         <dt>Task</dt><dd>${task}</dd>
         <dt>Carrying</dt><dd>${r.carrying ? 'yes' : 'no'}</dd>
         <dt>Priority</dt><dd>${r.priority} <span style="color:var(--muted)">(${r.basePrio} + ${aging} aging)</span></dd>
-        <dt>Region</dt><dd>${sim.central ? `${regionOf(r.cell)} · server M0` : `M${regionOf(r.cell)}`} · ${fmtCell(r.cell)}</dd>
+        <dt>${sim.layout.lift?.[r.cell] ? 'Lift' : 'Region'}</dt><dd>${sim.layout.lift?.[r.cell] ? `L${sim.layout.lift[r.cell] - 1}${r.motion?.ride ? ' · riding' : ''} · M${sim.mgrOf(r.cell)}` : sim.central ? `${regionOf(r.cell)} · server M0` : `M${regionOf(r.cell)}`} · ${fmtCell(r.cell)}</dd>
         <dt>Waiting for</dt><dd>${wait}</dd>
         ${offline ? `<dt>Network</dt><dd style="color:var(--red)">cut off · ${offline}</dd>` : ''}
       </dl>
@@ -361,12 +390,12 @@ export class Hud {
       $('ins-body').innerHTML = `<div id="ins-dyn"></div>
         <div class="ins-actions">
           <button class="ghost danger" data-act="crashmgr" data-id="${mgr.id}" title="${sim.central ? 'Crash the central server: the whole floor’s table is lost and must be rebuilt' : 'Crash this region’s manager: its table is lost and must be rebuilt'}">${sim.central ? 'Crash server' : `Crash manager M${mgr.id}`}</button>
-          <button class="ghost danger" data-act="cutnet" data-x="${xOf(cell)}" data-y="${yOf(cell)}" title="Cut every robot in the 5×5 cells around here off the network for 8 s">Cut network here</button>
+          <button class="ghost danger" data-act="cutnet" data-x="${xOf(cell)}" data-y="${yOf(cell)}" data-f="${floorOf(cell)}" title="Cut every robot in the 5×5 cells around here off the network for 8 s">Cut network here</button>
         </div>`;
     }
     const ownerBtn = (id) => (id >= 0 ? `<button class="linkish" data-act="robot" data-id="${id}">R${id}</button>` : '—');
     const L = sim.layout;
-    const kind = L.station[cell] ? 'Packing station' : L.bay[cell] ? 'Station bay' : L.box[cell] ? 'Crossing box' : L.hwyRows.includes(yOf(cell)) || L.hwyCols.includes(xOf(cell)) ? 'Highway lane' : 'Aisle';
+    const kind = L.lift?.[cell] ? `Lift L${L.lift[cell] - 1} shaft` : L.lobby?.[cell] ? `Lift L${L.lobby[cell] - 1} lobby` : L.station[cell] ? 'Packing station' : L.bay[cell] ? 'Station bay' : L.box[cell] ? 'Crossing box' : L.hwyRows.includes(yOf(cell)) || L.hwyCols.includes(xOf(cell)) ? 'Highway lane' : 'Aisle';
     const mgrState = mgr.state === 'UP' ? `up${mgr.gen ? `, incarnation ${mgr.gen}` : ''}` : mgr.state === 'DOWN' ? 'DOWN: table lost' : 'reconciling…';
     $('ins-dyn').innerHTML = `
       <span class="ins-chip" style="color:${mgr.state === 'UP' ? colors[e.state] : STATUS.deadlock.hex}"><i></i>${mgr.state === 'UP' ? e.state : 'UNKNOWN'}</span>

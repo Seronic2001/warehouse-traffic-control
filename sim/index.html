@@ -61,6 +61,9 @@
       </div>
     </header>
 
+    <!-- ── Floor view (multi-storey only) ── -->
+    <div class="floorbar" id="floorbar" role="tablist" aria-label="Floor on show" hidden></div>
+
     <!-- ── Scenario narration ── -->
     <section id="narration" class="narration" hidden>
       <div class="nar-head">
@@ -83,6 +86,14 @@
         <label class="field">
           <span>Robots <output id="out-robots">120</output></span>
           <input id="in-robots" type="range" min="50" max="200" step="10" value="120" />
+        </label>
+        <label class="field" title="Storeys stacked on top of each other, joined by lifts. Packing stations are on the ground floor.">
+          <span>Floors <output id="out-floors">1</output></span>
+          <input id="in-floors" type="range" min="1" max="3" step="1" value="1" />
+        </label>
+        <label class="field" id="field-lifts" title="Lifts between the floors. Each carries one robot at a time and has its own lift manager.">
+          <span>Lifts <output id="out-lifts">4</output></span>
+          <input id="in-lifts" type="range" min="1" max="8" step="1" value="4" />
         </label>
         <label class="field">
           <span>Network delay <output id="out-delay">50–150 ms</output></span>
