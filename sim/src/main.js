@@ -191,21 +191,43 @@ app.startScenario = (key, opts = {}) => {
   // Scenarios are scripted on a single floor.
   const cfg = { ...app.cfg, floors: 1, ...over, robots: Math.min(app.cfg.robots, maxBackground ?? 999) };
   app.scenario = key;
-  app.ctx = { start: 0, step: 0, shownAt: 0 };
+  // viewed: the step whose floor view and framing were last applied (-1:
+  // none yet; null: the scenario has no per-step views, or the tour drives
+  // the camera).
+  app.ctx = { start: 0, step: 0, shownAt: 0, viewed: sc.stepViews && !opts.silent ? -1 : null };
   app.attach(new Simulation(cfg, sc));
+  hud.syncFloorControls(cfg.floors, cfg.lifts);
   if (opts.silent) return;
   if (tour.active) tour.end();
   hud.showNarration(sc);
-  if (cfg.floors > 1) app.setFloorView(-1);
-  flyTo(new THREE.Vector3(wx(sc.focus.x), sc.focus.h ?? 0, wz(sc.focus.y)), sc.focus.dist, sc.focus.h ? 1.1 : 0.82);
+  if (sc.stepViews) applyStepView();
+  else {
+    if (cfg.floors > 1) app.setFloorView(-1);
+    flyTo(new THREE.Vector3(wx(sc.focus.x), sc.focus.h ?? 0, wz(sc.focus.y)), sc.focus.dist, sc.focus.h ? 1.1 : 0.82);
+  }
   app.running = true;
   hud.syncTransport();
 };
 
+// Show the floor the current scenario step happens on and frame it.
+function applyStepView() {
+  const ctx = app.ctx;
+  if (!ctx || ctx.viewed === null || ctx.viewed === ctx.step) return;
+  ctx.viewed = ctx.step;
+  const v = SCENARIOS[app.scenario].stepViews[ctx.step];
+  if (!v) return;
+  live.setView(v.view);
+  hud.syncFloors();
+  flyTo(new THREE.Vector3(wx(v.x), v.h, wz(v.y)), v.dist, v.polar, v.azimuth ?? null, 1300);
+}
+
 app.exitScenario = (restart = true) => {
+  const hadViews = app.ctx?.viewed !== null && app.ctx?.viewed !== undefined;
   app.scenario = null;
   app.ctx = null;
   hud.hideNarration();
+  hud.syncFloorControls();
+  if (hadViews) live.setView(-1), hud.syncFloors();
   if (restart) {
     app.restart();
     flyHome();
@@ -404,7 +426,10 @@ function frame(now) {
     }
     if (n === 16) acc = 0;
   }
-  if (app.scenario) hud.checkScenario(SCENARIOS[app.scenario]);
+  if (app.scenario) {
+    hud.checkScenario(SCENARIOS[app.scenario]);
+    applyStepView();
+  }
   sim.net.pruneFlights(sim.tick);
   const t = sim.tick + Math.min(acc / tickMs, 0.999);
   live.update(t, now, dt);

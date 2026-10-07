@@ -198,6 +198,15 @@ export const SCENARIOS = {
   lift: {
     title: 'Crash inside a lift',
     focus: { x: 18, y: 11.5, dist: 34, h: 10 },
+    // Each step shows one floor (`view`) and frames lift L0 there: the top
+    // floor while R0 boards, then the middle floor, with the stuck car
+    // hanging above it in the shaft.
+    stepViews: [
+      { view: 2, x: 18, y: 12, h: 20, dist: 16, polar: 0.95, azimuth: 0.7 },
+      { view: 1, x: 18, y: 12, h: 13.5, dist: 17, polar: 1.1, azimuth: 0.7 },
+      { view: 1, x: 18, y: 12, h: 12, dist: 24, polar: 1.0, azimuth: 0.7 },
+      { view: 1, x: 18, y: 12, h: 11, dist: 20, polar: 1.0, azimuth: 0.7 },
+    ],
     cfg: { mode: 'detect', floors: 3, lifts: 4, maxBackground: 90 },
     labels: [0],
     // R0 waits at lift L0's entry on the top floor, the car parked there,
@@ -214,10 +223,13 @@ export const SCENARIOS = {
       const pickup = L.pickups.find((c) => c < L.NF && Math.abs(xOf(c) - 21) + Math.abs(yOf(c) - 12) < 3) ?? L.pickups[0];
       r.task = { stage: 'pickup', pickup, dropoff: nearestStation(21, 12) };
       r.path = astar(r.cell, pickup, null, true, null, L) || [];
+      r.yieldUntil = 50; // time to read the first step before it boards
     },
+    // Crash once, about 40% into the ride: the car hangs halfway between the
+    // top and the middle floor. (R0 rides again after its repair.)
     onTick(sim) {
       const r = sim.robots[0];
-      if (r.alive && r.motion?.ride && sim.tick - r.motion.t0 === 14) sim.crashRobot(0);
+      if (sim.flags.crashed === undefined && r.alive && r.motion?.ride && sim.tick - r.motion.t0 === 22) sim.crashRobot(0);
     },
     steps: [
       {
@@ -225,14 +237,14 @@ export const SCENARIOS = {
         done: (sim, ctx) => since(sim, ctx, 'crashed'),
       },
       {
-        text: '<b>R0 crashed mid-ride.</b> The car stops between floors. Its lease is still valid, so nobody else may use the lift, and robots queue at L0\'s entries on every floor.',
+        text: '<b>R0 crashed mid-ride.</b> The car stops between floors. Its lease is still valid, so nobody else may use the lift, and robots queue at L0\'s entries.',
         done: (sim, ctx) => since(sim, ctx, 'blocked'),
       },
       {
         text: 'The car lease expired with R0 still inside, so lift <b>L0 is out of service</b> (Blocked). Robots waiting for it are told, avoid it and replan through the other lifts. Traffic keeps moving.',
         done: (sim, ctx) => since(sim, ctx, 'cleared'),
       },
-      { text: 'A crew winched the car to a floor and removed R0; the world sent <b>Cleared</b>. L0 is back in service with a new epoch, and R0 will return once repaired.', done: () => false },
+      { text: 'A crew winched the car down to the next floor and removed R0; the world sent <b>Cleared</b>. L0 is back in service with a new epoch, and R0 will return once repaired.', done: () => false },
     ],
   },
 

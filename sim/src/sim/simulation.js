@@ -355,7 +355,11 @@ export class Simulation {
     if (!r || !r.alive) return;
     r.crash();
     r.ownRecovered = false;
-    this.event('crash', `R${id} crashed holding ${r.leases.size} lease${r.leases.size === 1 ? '' : 's'}`, { cell: r.cell, robots: [id] });
+    const n = `${r.leases.size} lease${r.leases.size === 1 ? '' : 's'}`;
+    if (r.motion?.ride) {
+      const lift = this.layout.lift[r.cell] - 1;
+      this.event('crash', `R${id} crashed inside lift L${lift}, between floors, holding ${n}`, { cell: r.cell, robots: [id], lift });
+    } else this.event('crash', `R${id} crashed holding ${n}`, { cell: r.cell, robots: [id] });
     this.flag('crashed');
     this.maintenance.push({ robot: id, stage: 'down', since: this.tick });
   }
@@ -464,9 +468,13 @@ export class Simulation {
       } else if (job.stage === 'blocked' && t - job.since >= this.cfg.clearAfter) {
         const cells = r.footprint;
         if (r.motion?.ride) {
-          // The crew winches the stuck car to the floor it was heading for.
-          const car = this.cars[this.layout.lift[r.motion.to] - 1];
-          car.floor = floorOf(r.motion.to);
+          // The crew winches the stuck car on to the next floor it would
+          // have reached.
+          const mo = r.motion;
+          const a = floorOf(mo.from), b = floorOf(mo.to);
+          const k = Math.min(1, Math.max(0, (r.crashTick - mo.start) / (mo.t1 - mo.start)));
+          const car = this.cars[this.layout.lift[mo.to] - 1];
+          car.floor = a + Math.sign(b - a) * Math.max(1, Math.ceil(Math.abs(b - a) * k));
           car.moving = null;
         }
         this.setFootprint(r, []);

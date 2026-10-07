@@ -125,7 +125,14 @@ export class LiftManager extends RegionManager {
     if (!p) return;
     const sim = this.sim;
     const car = this.car;
-    if (car.moving || car.floor !== p.floor) return;
+    if (car.moving) return;
+    // The car stopped elsewhere: the call was made while it was busy
+    // (travelling for a robot that then cancelled) or the shaft was occupied.
+    // Call it again.
+    if (car.floor !== p.floor) {
+      if (!p.occupied) sim.callCar(this.liftId, p.floor);
+      return;
+    }
     // Floor sensor: nobody else may be in the shaft.
     if (this.occupied(p.robot)) return;
     this.pending = null;
@@ -189,7 +196,7 @@ export class LiftManager extends RegionManager {
     const was = e.state === 'BLOCKED';
     for (const c of this.lift.shafts) this.blocked.delete(c);
     if (was || assignTo >= 0) {
-      sim.event('cleared', `Lift ${this.name} ${assignTo >= 0 ? `returned to R${assignTo}, who is inside` : 'cleared: back in service'}`, { cell, robots: assignTo >= 0 ? [assignTo] : [] });
+      sim.event('cleared', `Lift ${this.name} ${assignTo >= 0 ? `returned to R${assignTo}, who is inside` : 'cleared: back in service'}`, { cell, robots: assignTo >= 0 ? [assignTo] : [], lift: this.liftId });
       sim.flag('cleared');
     }
     e.state = 'FREE';
@@ -264,7 +271,7 @@ export class LiftManager extends RegionManager {
         this.fenceAll(-1, e.epoch);
         for (const w of e.queue) for (const c of w.cells) this.send('r' + w.robot, { type: 'BLOCKED', cell: c });
         e.queue = [];
-        sim.event('blocked', `Lease of R${holder} on lift ${this.name} expired with a robot inside → lift out of service`, { cell: this.lift.shafts[floorOf(hr?.cell ?? e.cell)] ?? e.cell, robots: [holder] });
+        sim.event('blocked', `Lease of R${holder} on lift ${this.name} expired with a robot inside → lift out of service`, { cell: this.lift.shafts[floorOf(hr?.cell ?? e.cell)] ?? e.cell, robots: [holder], lift: this.liftId });
         sim.flag('blocked');
       } else {
         e.state = 'FREE';

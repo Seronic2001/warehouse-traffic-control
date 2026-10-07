@@ -275,10 +275,13 @@ export class LiveView {
     return this.view < 0 || floorOf(c) === this.view;
   }
 
-  // The robot is on the floor on show (or riding to or from it).
+  // The robot is on the floor on show (or riding to, from or past it).
   showsRobot(r) {
     if (this.view < 0) return true;
-    if (r.motion?.ride) return floorOf(r.motion.from) === this.view || floorOf(r.motion.to) === this.view;
+    if (r.motion?.ride) {
+      const a = floorOf(r.motion.from), b = floorOf(r.motion.to);
+      return this.view >= Math.min(a, b) && this.view <= Math.max(a, b);
+    }
     return floorOf(r.cell) === this.view;
   }
 
@@ -993,6 +996,18 @@ export class LiveView {
       const important = this.focusRobots.size === 0 || (e.robots || []).some((id) => this.focusRobots.has(id) || id === this.selected);
       let text = null;
       let cell = e.cell;
+      // Lift events are pinned to the car, wherever it is in the shaft.
+      if (e.lift !== undefined && ['crash', 'blocked', 'cleared'].includes(e.kind)) {
+        const l = this.warehouse.lifts[e.lift];
+        if (!l) continue;
+        const html = {
+          crash: `<b>R${e.robots[0]} CRASHED</b> inside lift L${e.lift}`,
+          blocked: `<b>L${e.lift} OUT OF SERVICE</b> car lease expired, R${e.robots[0]} inside`,
+          cleared: `<b>L${e.lift} BACK IN SERVICE</b>`,
+        }[e.kind];
+        this.addCallout(html, l.x, l.z, e.kind, now, l.car.position.y + 0.4);
+        continue;
+      }
       switch (e.kind) {
         case 'fenced': text = `<b>FENCED</b> stale epoch rejected`; break;
         case 'blocked': text = `<b>BLOCKED</b> lease expired, robot inside`; break;
@@ -1088,16 +1103,23 @@ export class LiveView {
         const st = robotStatusKey(r, sim, this.cycleMembers);
         this.label('r' + id, `rlabel st-${st}${id === this.selected ? ' sel' : ''}`, `<i></i>R${id}`, wx(x), this.robotY(id) + 1.1, wz(y));
       }
-      // blocked cells with the crew's countdown
+      // blocked cells with the crew's countdown; a blocked lift gets one
+      // label, on its car, rather than one per floor
+      const withCrew = (text, cells) => {
+        const job = sim.maintenance.find((j) => j.stage === 'blocked' && sim.robots[j.robot].footprint.some((c) => cells.includes(c)));
+        if (!job) return text;
+        const k = Math.min(1, (sim.tick - job.since) / sim.cfg.clearAfter);
+        return `<span class="pie" style="--k:${k}"></span>${text} · crew ${(((1 - k) * sim.cfg.clearAfter * sim.cfg.tickMs) / 1000).toFixed(1)}s`;
+      };
       for (const c of this.blockedCells || []) {
-        const job = sim.maintenance.find((j) => j.stage === 'blocked' && sim.robots[j.robot].footprint.includes(c));
-        let html = 'BLOCKED';
-        if (job) {
-          const k = Math.min(1, (sim.tick - job.since) / sim.cfg.clearAfter);
-          html = `<span class="pie" style="--k:${k}"></span>BLOCKED · crew ${(((1 - k) * sim.cfg.clearAfter * sim.cfg.tickMs) / 1000).toFixed(1)}s`;
-        }
-        this.label('b' + c, 'blabel', html, wx(xOf(c)), this.cellY(c) + 0.02, wz(yOf(c)) + 0.62);
+        if (sim.layout.lift?.[c]) continue;
+        this.label('b' + c, 'blabel', withCrew('BLOCKED', [c]), wx(xOf(c)), this.cellY(c) + 0.02, wz(yOf(c)) + 0.62);
       }
+      sim.layout.lifts.forEach((lift, i) => {
+        if (!lift.shafts.some((c) => sim.managers[sim.mgrOf(c)].blocked.has(c))) return;
+        const l = this.warehouse.lifts[i];
+        this.label('bl' + i, 'blabel', withCrew(`L${i} OUT OF SERVICE`, lift.shafts), l.x, l.car.position.y + 2, l.z);
+      });
     }
     if (this.layers.managers) {
       for (const node of this.managers) {

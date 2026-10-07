@@ -85,12 +85,17 @@ export class Hud {
       app.cfg.floors = v;
       showFloors(v);
     });
-    // Mirror app.cfg.floors in the slider (after a tab switch).
-    this.syncFloorControls = () => {
+    // Mirror the floor and lift counts in the sliders (after a tab switch,
+    // or while a scenario runs its own building).
+    this.syncFloorControls = (floors = app.cfg.floors, lifts = app.cfg.lifts) => {
       const el = $('in-floors');
-      el.value = app.cfg.floors;
+      el.value = floors;
       fill(el);
-      showFloors(app.cfg.floors);
+      showFloors(floors);
+      const li = $('in-lifts');
+      li.value = lifts;
+      fill(li);
+      $('out-lifts').textContent = lifts;
     };
     bind('in-lifts', (v) => {
       app.cfg.lifts = v;
