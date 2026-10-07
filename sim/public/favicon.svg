@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <style>
+    .dim { fill: #cbd5e1; }
+    .lit { fill: #0891b2; }
+    @media (prefers-color-scheme: dark) {
+      .dim { fill: #475569; }
+      .lit { fill: #38bdf8; }
+    }
+  </style>
+  <rect class="dim" x="2" y="2" width="12.5" height="12.5" rx="3.2" />
+  <rect class="lit" x="17.5" y="2" width="12.5" height="12.5" rx="3.2" />
+  <rect class="lit" x="2" y="17.5" width="12.5" height="12.5" rx="3.2" />
+  <rect class="dim" x="17.5" y="17.5" width="12.5" height="12.5" rx="3.2" />
+</svg>

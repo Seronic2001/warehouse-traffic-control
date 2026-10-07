@@ -5,22 +5,25 @@ import { STATUS, EVENT_COLORS, MODE_SERIES } from './palette.js';
 const LIGHT = {
   mode: 'light',
   scene: {
-    bg: 0xe9edf2, fogNear: 75, fogFar: 160, env: 0.6, exposure: 1.0,
-    hemi: [0xffffff, 0xb8c2d0, 1.4], sun: [0xfff8ee, 2.0], fill: [0xdbe7ff, 0.6],
-    bloom: [0.18, 0.3, 1.6],
+    // Slightly under-exposed and softly lit, so near-white surfaces keep
+    // some contrast between them.
+    bg: 0xe4e8ee, fogNear: 75, fogFar: 160, env: 0.5, exposure: 0.92,
+    hemi: [0xffffff, 0xaab4c2, 1.2], sun: [0xfff6e8, 1.9], fill: [0xd6e2f5, 0.5],
+    bloom: [0.1, 0.3, 1.8],
   },
-  ground: 0xe2e7ee, grid: [0xd3dae3, 0xd9dfe7],
+  ground: 0xd8dee6, grid: [0xc9d0da, 0xd0d6df],
   floor: {
-    base: '#f3f5f8', wall: '#cfd6df', shelf: '#e1e6ec', bay: '#ddf1f6', hwy: '#e6eaf0', aisle: '#f7f8fa',
+    base: '#eceff3', wall: '#c4ccd6', shelf: '#d9dfe6', bay: '#d5ebf1', hwy: '#e0e5ec', aisle: '#f1f3f6',
     grid: 'rgba(15,23,42,0.06)', hatch: 'rgba(217,119,6,0.10)', boxLine: 'rgba(217,119,6,0.45)',
     divider: 'rgba(234,179,8,0.85)', chevron: 'rgba(30,41,59,0.22)',
     stationLine: 'rgba(8,145,178,0.85)', stationFill: 'rgba(8,145,178,0.10)',
     regionLine: 'rgba(37,99,235,0.40)', regionText: 'rgba(37,99,235,0.55)',
   },
-  rack: { frame: 0x3f6db3, deck: 0xd3d9e1, totes: [0xd8b98c, 0xcfae80, 0xe2c79f, 0x9fb6cf, 0xc5ccd6, 0xd3b48a] },
-  wall: 0xc6ced9,
+  rack: { frame: 0x5873a0, deck: 0xc8cfd9, totes: [0xd2b385, 0xc8a87a, 0xdcc199, 0x98aec7, 0xbcc4cf, 0xccad84] },
+  wall: 0xb9c2ce,
+  slab: 0xa9b3c0, // underside of upper floors: a shade darker so storeys read apart
   station: { body: 0xdfe5ec, belt: 0x475569, screen: ['#0891b2', 1], lamp: ['#16a34a', 1] },
-  fade: { to: 0xeef1f5, amount: 0.8 },
+  fade: { to: 0xe8ecf1, amount: 0.8 },
   manager: { base: '#2563eb', blocked: '#d97706', selected: '#0f172a', glow: false, beam: 0.25 },
   // Lifts: light green; deeper green while a robot holds the car.
   lift: { base: '#4ade80', held: '#16a34a', line: 'rgba(22,163,74,0.8)', fill: 'rgba(74,222,128,0.18)', lobby: '#dcf7e6' },
@@ -75,6 +78,7 @@ const DARK = {
   },
   rack: { frame: 0x4d6a93, deck: 0x3b4048, totes: [0x8a7356, 0x7b6a54, 0x957f60, 0x5d6f84, 0x6b717a, 0x84704f] },
   wall: 0x30353d,
+  slab: 0x30353d, // same as the walls: the night view is unchanged
   station: { body: 0x363b44, belt: 0x1d2026, screen: ['#6cb6cf', 1], lamp: ['#4fae7c', 1] },
   fade: { to: 0x15181d, amount: 0.8 },
   manager: { base: '#7896d6', blocked: '#e0a030', selected: '#ffffff', glow: false, beam: 0.25 },

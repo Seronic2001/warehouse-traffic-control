@@ -96,7 +96,7 @@ export function buildWarehouse(scene, L0, renderer) {
       g.add(floor);
       if (f > 0) {
         // A thin slab under upper floors, so the stack reads as a building.
-        const slab = new THREE.Mesh(new THREE.BoxGeometry(W, 0.3, H), dimmable(new THREE.MeshStandardMaterial({ color: theme.wall, roughness: 0.9 }), 'wall'));
+        const slab = new THREE.Mesh(new THREE.BoxGeometry(W, 0.3, H), dimmable(new THREE.MeshStandardMaterial({ color: theme.slab, roughness: 0.9 }), 'slab'));
         slab.position.y = -0.17;
         slab.receiveShadow = true;
         g.add(slab);
