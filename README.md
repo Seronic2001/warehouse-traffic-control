@@ -2,10 +2,13 @@
 
 This is a browser demo of Project A. 50 to 200 robots share a grid safely by using per-cell leases, fencing epochs and Chandy–Misra–Haas deadlock detection.
 
+Live: https://seronic2001.github.io/warehouse-traffic-control/
+
 ```bash
+cd sim
 npm install
 npm run dev        # http://localhost:5173
-npm run build      # static build in dist/ (any static host works)
+npm run build      # static build in sim/dist/ (any static host works)
 ```
 
 ## What to show in a demo
@@ -33,16 +36,16 @@ Click any robot to see its leases, epochs, expiry bars and what it is waiting fo
 
 | Proposal component | Code |
 |---|---|
-| World simulator (ground truth, collisions, fencing) | `src/sim/simulation.js` |
-| Robots: one process each, with A* and leases | `src/sim/robot.js`, `src/sim/astar.js` |
-| Region managers: 4×4 regions, reservation table | `src/sim/manager.js` |
-| Network layer with delay and loss | `src/sim/network.js` |
-| Live view | `src/render/*`, `src/ui/*` |
-| Failure scenarios | `src/sim/scenarios.js` |
-| Replay (checkpoints + action log) | `src/sim/history.js` |
-| Message timeline recorder | `src/sim/trace.js`, `src/ui/timeline.js` |
-| Floors and lifts (layout, A* rides) | `src/sim/layout.js`, `src/sim/astar.js` |
-| Lift managers | `src/sim/lift.js` |
+| World simulator (ground truth, collisions, fencing) | `sim/src/sim/simulation.js` |
+| Robots: one process each, with A* and leases | `sim/src/sim/robot.js`, `sim/src/sim/astar.js` |
+| Region managers: 4×4 regions, reservation table | `sim/src/sim/manager.js` |
+| Network layer with delay and loss | `sim/src/sim/network.js` |
+| Live view | `sim/src/render/*`, `sim/src/ui/*` |
+| Failure scenarios | `sim/src/sim/scenarios.js` |
+| Replay (checkpoints + action log) | `sim/src/sim/history.js` |
+| Message timeline recorder | `sim/src/sim/trace.js`, `sim/src/ui/timeline.js` |
+| Floors and lifts (layout, A* rides) | `sim/src/sim/layout.js`, `sim/src/sim/astar.js` |
+| Lift managers | `sim/src/sim/lift.js` |
 
 Robots, managers and the world only talk to each other through network messages. The single exception is the move actuator, which is where fencing happens. Every run is replayable from its seed.
 
