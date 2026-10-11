@@ -32,14 +32,9 @@ export class RegionManager {
     // Congestion: open cells in this region, and this manager's view of every
     // region's load, spread by gossip. The view is replaced, never mutated,
     // so replies can carry it by reference.
-    this.cap = 0;
     this.nRegions = sim.layout.R;
-    this.regionCap = new Array(this.nRegions).fill(0);
-    for (let c = 0; c < sim.layout.N; c++) {
-      if (sim.layout.solid[c]) continue;
-      this.regionCap[regionOf(c)]++;
-      if (sim.mgrOf(c) === id) this.cap++;
-    }
+    // The central server owns every region's cells.
+    this.cap = sim.central ? sim.layout.regionCap.reduce((a, b) => a + b, 0) : sim.layout.regionCap[id] ?? 0;
     this.view = emptyView(this.nRegions);
     // Gossip peers: the neighbouring regions on the same floor.
     const { RX, RY } = sim.layout;
@@ -64,8 +59,9 @@ export class RegionManager {
     if (this.sim.central) {
       // The central coordinator sees every region's load directly.
       const util = new Array(this.nRegions).fill(0);
+      const cap = this.sim.layout.regionCap;
       for (const c of this.owned) util[regionOf(c)]++;
-      for (let i = 0; i < this.nRegions; i++) util[i] /= this.regionCap[i] || 1;
+      for (let i = 0; i < this.nRegions; i++) util[i] /= cap[i] || 1;
       this.view = { util, stamp: new Array(this.nRegions).fill(t) };
       return;
     }
@@ -93,7 +89,7 @@ export class RegionManager {
     if (!this.sim.central) return this.owned.size / this.cap;
     let n = 0;
     for (const c of this.owned) if (regionOf(c) === region) n++;
-    return n / (this.regionCap[region] || 1);
+    return n / (this.sim.layout.regionCap[region] || 1);
   }
 
   // Next epoch for a cell: always above anything issued in an earlier life.
@@ -138,7 +134,28 @@ export class RegionManager {
     sim.flag('mgrRestart');
   }
 
+  // Who is speaking in this manager's events.
+  title() {
+    return `M${this.id}`;
+  }
+
   finishReconcile() {
+    const sim = this.sim;
+    const res = this.rebuild();
+    this.state = 'UP';
+    sim.recordRecovery('mgrReconcile', sim.tick - this.downTick);
+    if (this.outageRobots) sim.recordOutage(this.outageRobots.size);
+    this.outageRobots = null;
+    sim.event('reconciled', `${this.title()} reconciled from ${this.reports.size} robot reports: ${res.text}${res.conflicts ? `, ${res.conflicts} conflicting claims settled` : ''}. Grants resume.`, { mgr: this.id });
+    sim.flag('mgrReconciled');
+    this.lastReconcile = { reports: this.reports.size, restored: res.restored, blocked: res.blocked, conflicts: res.conflicts };
+    const backlog = this.backlog;
+    this.backlog = [];
+    for (const m of backlog) this.receive(m);
+  }
+
+  // Rebuild the table from the robots' reports.
+  rebuild() {
     const sim = this.sim;
     const t = sim.tick;
     let restored = 0;
@@ -146,6 +163,16 @@ export class RegionManager {
     for (const rep of this.reports.values()) {
       for (let i = 0; i < rep.cells.length; i += 2) {
         const cell = rep.cells[i], epoch = rep.cells[i + 1];
+        // A report is only a claim. A robot that was cut off may still
+        // believe in a lease that expired and went to someone else before
+        // the crash; if that robot is frozen, or its report was lost, the
+        // stale claim arrives unopposed. The floor sensor settles it: a
+        // cell another robot is standing in is not restored (it ends up
+        // Blocked below), exactly as grant() refuses to hand it out.
+        if (sim.occupantOtherThan(cell, rep.robot) >= 0) {
+          conflicts++;
+          continue;
+        }
         const e = this.entry(cell);
         if (e.owner >= 0 && e.owner !== rep.robot) {
           // Two robots claim the cell: the higher epoch is the newer grant.
@@ -174,16 +201,7 @@ export class RegionManager {
       sim.setFence(c, -1, e.epoch);
       blocked++;
     }
-    this.state = 'UP';
-    sim.recordRecovery('mgrReconcile', t - this.downTick);
-    if (this.outageRobots) sim.recordOutage(this.outageRobots.size);
-    this.outageRobots = null;
-    sim.event('reconciled', `M${this.id} reconciled from ${this.reports.size} robot reports: ${restored} leases restored, ${blocked} cells Blocked${conflicts ? `, ${conflicts} conflicts resolved by epoch` : ''}. Grants resume.`, { mgr: this.id });
-    sim.flag('mgrReconciled');
-    this.lastReconcile = { reports: this.reports.size, restored, blocked, conflicts };
-    const backlog = this.backlog;
-    this.backlog = [];
-    for (const m of backlog) this.receive(m);
+    return { restored, blocked, conflicts, text: `${restored} leases restored, ${blocked} cells Blocked` };
   }
 
   entry(cell) {
@@ -246,15 +264,22 @@ export class RegionManager {
       sim.metrics.dropped++;
       return;
     }
+    const reconciling = this.state === 'RECONCILING';
+    if (reconciling && m.type !== 'REPORT' && m.type !== 'LOAD') {
+      // No grants until the table is rebuilt. Counted as handled when it
+      // is replayed, not now.
+      this.backlog.push(m);
+      return;
+    }
     sim.metrics.mgrMsgs++;
     this.handled++;
     this.winCount++;
     if (m.type === 'LOAD') return this.onLoad(m);
-    if (this.state === 'RECONCILING') {
-      if (m.type === 'REPORT') {
-        if (m.gen === this.gen) this.reports.set(m.robot, m);
-        if (this.reports.size >= this.sim.robots.filter((r) => r.alive).length) this.finishReconcile();
-      } else this.backlog.push(m); // no grants until the table is rebuilt
+    if (reconciling) {
+      if (m.gen === this.gen) this.reports.set(m.robot, m);
+      // Done early once the whole fleet (the roster RECONCILE went to) has
+      // answered; otherwise the timeout in step() ends the wait.
+      if (this.reports.size >= sim.robots.length) this.finishReconcile();
       return;
     }
     this.activity++;
@@ -274,24 +299,30 @@ export class RegionManager {
       // Duplicate request (e.g. our grant was lost): re-send the same grant.
       return this.send('r' + robot, { type: 'GRANT', cell, epoch: e.epoch, expiry: e.expiry });
     }
-    if (e.owner === -1) return this.grant(e, robot, false);
+    // A held cell is free on paper but the floor sensor still sees a robot
+    // in it: newcomers join the queue in priority order like anyone else.
+    const held = e.owner === -1 && this.held.has(cell);
+    if (e.owner === -1 && !held) return this.grant(e, robot, false, prio);
+    const holder = held ? this.sim.occupantOtherThan(cell, robot) : e.owner;
     // Ordered acquisition never waits in a queue: it is told who holds the
     // cell, backs off, and retries.
-    if (tryOnly) return this.send('r' + robot, { type: 'DENIED', cell, holder: e.owner });
+    if (tryOnly) return this.send('r' + robot, { type: 'DENIED', cell, holder });
     const q = e.queue.find((w) => w.robot === robot);
     if (q) q.prio = prio;
     else e.queue.push({ robot, prio, since: this.sim.tick });
     e.queue.sort((a, b) => b.prio - a.prio || a.since - b.since || a.robot - b.robot);
-    this.send('r' + robot, { type: 'QUEUED', cell, holder: e.owner });
+    this.send('r' + robot, { type: 'QUEUED', cell, holder });
   }
 
-  grant(e, robot, occupied) {
+  // `prio` only matters if the request has to wait for the cell to empty: a
+  // robot being handed back the cell it stands in goes first.
+  grant(e, robot, occupied, prio = Infinity) {
     const sim = this.sim;
     // Defence in depth: never hand out a cell the floor sensor says another
     // robot is physically in. Keep the request queued until the cell empties.
     const other = sim.occupantOtherThan(e.cell, robot);
     if (other >= 0) {
-      if (!e.queue.some((w) => w.robot === robot)) e.queue.unshift({ robot, prio: Infinity, since: sim.tick });
+      if (!e.queue.some((w) => w.robot === robot)) e.queue.unshift({ robot, prio, since: sim.tick });
       this.held.add(e.cell);
       sim.metrics.sensorHolds++;
       this.send('r' + robot, { type: 'QUEUED', cell: e.cell, holder: other });
@@ -407,6 +438,18 @@ export class RegionManager {
     this.stepUp(t);
   }
 
+  // Metrics for a lease that just ran out. `cell` is the cell the holder
+  // knows the lease by.
+  countExpiry(e, cell) {
+    const sim = this.sim;
+    sim.metrics.expired++;
+    const hr = sim.robots[e.owner];
+    if (!hr) return;
+    // A live robot lost a lease it still believed it held (renewals failed).
+    if (hr.alive && hr.leases.get(cell)?.epoch === e.epoch) sim.metrics.liveExpiries++;
+    else sim.onCrashedLeaseRecovered(hr);
+  }
+
   // One tick of an up-and-running manager: held cells, lease expiry, gossip.
   stepUp(t) {
     const sim = this.sim;
@@ -421,12 +464,8 @@ export class RegionManager {
     for (const cell of this.owned) {
       const e = this.entries.get(cell);
       if (e.expiry >= t) continue;
-      sim.metrics.expired++;
       const holder = e.owner;
-      const hr = sim.robots[holder];
-      // A live robot lost a lease it still believed it held (renewals failed).
-      if (hr && hr.alive && hr.leases.get(cell)?.epoch === e.epoch) sim.metrics.liveExpiries++;
-      else if (hr) sim.onCrashedLeaseRecovered(hr);
+      this.countExpiry(e, cell);
       this.owned.delete(cell);
       e.lastOwner = holder;
       if (sim.physCount[cell] > 0) {

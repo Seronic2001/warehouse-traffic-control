@@ -76,9 +76,13 @@ export class Tour {
     if (!force && !app.scenario && this.ownSim === app.sim) return;
     app.scenario = null;
     app.ctx = null;
-    app.attach(new Simulation({ ...app.cfg, mode: 'detect', robots: 120, floors: 1 }));
-    for (let i = 0; i < 1200; i++) app.step();
-    this.ownSim = app.sim;
+    // Warmed up before it goes on show: stepping the bare simulation is two
+    // to three times faster than stepping through history and the recorders,
+    // and nobody rewinds into the warm-up.
+    const sim = new Simulation({ ...app.cfg, mode: 'detect', robots: 120, floors: 1 });
+    for (let i = 0; i < 1200; i++) sim.step();
+    app.attach(sim);
+    this.ownSim = sim;
   }
 
   scenario(key, until) {
@@ -118,6 +122,7 @@ export class Tour {
     $('tour-next').textContent = i === this.steps.length - 1 ? 'Start exploring' : 'Next →';
     [...$('tour-dots').children].forEach((d, k) => (d.className = k < i ? 'done' : k === i ? 'on' : ''));
     $('tour-status').textContent = '';
+    this.lastStatus = undefined;
     this.state = {};
     step.enter(this, this.app, this.state);
   }
@@ -422,7 +427,7 @@ function buildSteps() {
             cls: 'ar',
             html: (sim) => (sim.managers[regionOf(cellOf(31, 23))].blocked.has(cellOf(31, 23)) ? '<b>Blocked</b><small>lease expired with the robot inside</small>' : '<b>Cleared</b><small>crew removed the robot</small>'),
           },
-          { key: 'rg', cell: cellOf(30, 23), h: 60, cls: 'al', html: (sim) => `<b>Re-granted to R1</b><small>epoch ${sim.managers[regionOf(cellOf(30, 23))].entry(cellOf(30, 23)).epoch}</small>` },
+          { key: 'rg', cell: cellOf(30, 23), h: 60, cls: 'al', html: (sim) => `<b>Re-granted to R1</b><small>epoch ${fmtEpoch(sim.managers[regionOf(cellOf(30, 23))].entries.get(cellOf(30, 23))?.epoch ?? 0)}</small>` },
         ];
       },
       update(t, app) {
@@ -505,7 +510,7 @@ function buildSteps() {
     {
       title: 'Your dashboard',
       body: `<p><b>Top right:</b> <b>protected collisions</b>, the one number that must always be 0. Below it are throughput, deadlocks, messages per move, fenced moves and an event log.</p>
-        <p><b>Bottom:</b> replay any of the five failure stories, rewind the run with the <b>scrubber</b> (<b>[</b> and <b>]</b> jump 5 s), or run the <b>benchmark</b>: strategies against density, the lease safety margin, and recovery times after failures.</p>
+        <p><b>Bottom:</b> replay any of the six failure stories, rewind the run with the <b>scrubber</b> (<b>[</b> and <b>]</b> jump 5 s), or run the <b>benchmark</b>: strategies against density, the lease safety margin, and recovery times after failures.</p>
         <p><b>Top:</b> switch to <b>Baseline</b> to watch robots without leases collide. Click any robot to inspect it, then press <b>M</b> for its message timeline.</p>`,
       enter(t, app) {
         t.freeRun(true);

@@ -16,11 +16,11 @@
 // * If a car lease expires with a robot inside, the whole lift is Blocked
 //   (out of service) until a crew clears it.
 import { RegionManager } from './manager.js';
+import { floorOf, fmtCell, rideTicks } from './layout.js';
 
 // A waiter on another floor is served before ones on the car's floor once it
 // has waited this long (ticks): nearest-floor-first, but nobody starves.
 const MAX_SKIP_WAIT = 160;
-import { floorOf, fmtCell, rideTicks } from './layout.js';
 
 export class LiftManager extends RegionManager {
   constructor(sim, id, lift) {
@@ -29,6 +29,7 @@ export class LiftManager extends RegionManager {
     this.liftId = lift.id;
     this.name = `L${lift.id}`;
     this.peers = [];
+    this.cap = lift.shafts.length;
     this.pending = null; // { robot, floor, cells, since, occupied }: car on its way to this robot
   }
 
@@ -41,7 +42,11 @@ export class LiftManager extends RegionManager {
   }
 
   crashText() {
-    return `Lift manager M${this.id} (lift ${this.name}) crashed: who holds the car is lost`;
+    return `Lift manager ${this.title()} crashed: who holds the car is lost`;
+  }
+
+  title() {
+    return `M${this.id} (lift ${this.name})`;
   }
 
   gossip() {}
@@ -207,15 +212,20 @@ export class LiftManager extends RegionManager {
     if (e.queue.length && !this.pending) this.grant(e, this.next(e), false);
   }
 
-  finishReconcile() {
-    const sim = this.sim;
-    const t = sim.tick;
+  rebuild() {
+    const t = this.sim.tick;
     const e = this.entry();
     let restored = 0;
     let conflicts = 0;
     for (const rep of this.reports.values()) {
       for (let i = 0; i < rep.cells.length; i += 2) {
         const epoch = rep.cells[i + 1];
+        // A stale claim on a car someone else is in is not restored (see
+        // RegionManager.rebuild): the lift ends up out of service below.
+        if (this.occupied(rep.robot)) {
+          conflicts++;
+          continue;
+        }
         if (e.owner >= 0 && e.owner !== rep.robot) {
           conflicts++;
           if (epoch < e.epoch) continue;
@@ -238,16 +248,8 @@ export class LiftManager extends RegionManager {
       for (const c of this.lift.shafts) this.blocked.add(c);
       this.fenceAll(-1, e.epoch);
     }
-    this.state = 'UP';
-    sim.recordRecovery('mgrReconcile', t - this.downTick);
-    if (this.outageRobots) sim.recordOutage(this.outageRobots.size);
-    this.outageRobots = null;
-    sim.event('reconciled', `M${this.id} (lift ${this.name}) reconciled from ${this.reports.size} robot reports: ${e.owner >= 0 ? `car held by R${e.owner}` : e.state === 'BLOCKED' ? 'car occupied by nobody who claims it → out of service' : 'car free'}${conflicts ? `, ${conflicts} conflicts resolved by epoch` : ''}. Grants resume.`, { mgr: this.id });
-    sim.flag('mgrReconciled');
-    this.lastReconcile = { reports: this.reports.size, restored, blocked: e.state === 'BLOCKED' ? 1 : 0, conflicts };
-    const backlog = this.backlog;
-    this.backlog = [];
-    for (const m of backlog) this.receive(m);
+    const blocked = e.state === 'BLOCKED';
+    return { restored, blocked: blocked ? 1 : 0, conflicts, text: e.owner >= 0 ? `car held by R${e.owner}` : blocked ? 'car occupied by nobody who claims it → out of service' : 'car free' };
   }
 
   stepUp(t) {
@@ -255,11 +257,9 @@ export class LiftManager extends RegionManager {
     this.tryGrant();
     const e = this.entries.get(this.lift.shafts[0]);
     if (e && e.owner >= 0 && e.expiry < t) {
-      sim.metrics.expired++;
       const holder = e.owner;
       const hr = sim.robots[holder];
-      if (hr && hr.alive && hr.leases.get(this.lift.shafts.find((c) => hr.leases.has(c)))?.epoch === e.epoch) sim.metrics.liveExpiries++;
-      else if (hr) sim.onCrashedLeaseRecovered(hr);
+      this.countExpiry(e, this.lift.shafts.find((c) => hr?.leases.has(c)));
       this.owned.delete(e.cell);
       e.lastOwner = holder;
       e.owner = -1;

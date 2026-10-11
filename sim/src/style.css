@@ -57,6 +57,8 @@
 
 
 * { box-sizing: border-box; }
+/* `hidden` must win over the display set by a class (grid, flex…). */
+[hidden] { display: none !important; }
 
 html, body {
   margin: 0;
@@ -353,7 +355,6 @@ input[type='range']::-moz-range-thumb { width: 14px; height: 14px; border-radius
 .feed li:hover { background: rgba(var(--ink), 0.043); color: var(--text); }
 .feed li i { width: 7px; height: 7px; border-radius: 50%; transform: translateY(-1px); }
 .feed li time { font-family: var(--mono); font-size: 11px; color: var(--muted); }
-.feed .empty { color: var(--muted); font-size: 12px; padding: 4px 14px 12px; }
 
 /* ───────── scenario dock ───────── */
 .dock {
@@ -534,7 +535,6 @@ body.has-timeline .hint { display: none; }
   -webkit-backdrop-filter: blur(6px);
   padding: 16px;
 }
-.modal[hidden] { display: none; }
 .modal-card {
   width: min(1040px, 100%);
   max-height: calc(100vh - 32px);
@@ -588,7 +588,6 @@ body.has-timeline .hint { display: none; }
 
 /* ───────── responsive ───────── */
 @media (max-width: 1380px) {
-  .brand p { display: none; }
   .scn small { display: none; }
 }
 @media (max-height: 760px) {
@@ -669,7 +668,6 @@ body.touring.tour-dash .tour { bottom: 96px; }
   animation: rise 0.45s cubic-bezier(.2, .9, .3, 1.2);
   transition: bottom 0.4s;
 }
-.tour[hidden] { display: none; }
 @keyframes rise { from { opacity: 0; transform: translate(-50%, 16px); } }
 .tour-top { display: flex; align-items: center; gap: 12px; }
 .tour-step { font-family: var(--mono); font-size: 11.5px; color: var(--cyan); font-weight: 600; }
@@ -746,7 +744,6 @@ body.touring.tour-dash .tour { bottom: 96px; }
 .mlabel.hi { color: #fff; border-color: rgba(37, 99, 235, 0.8); background: var(--mgr); font-size: 12px; padding: 3px 8px; box-shadow: 0 0 14px rgba(37, 99, 235, 0.5); }
 
 @media (max-width: 860px) {
-  .tour-btn { font-size: 0; gap: 0; padding: 0 8px; }
   .tour h2 { font-size: 17px; }
   .tour-body { font-size: 13px; max-height: 34vh; overflow: auto; }
 }
@@ -860,7 +857,6 @@ body.touring.tour-dash .tour { bottom: 96px; }
   backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
   box-shadow: 0 6px 24px rgba(var(--shade), calc(0.1 * var(--shade-k)));
 }
-.floorbar[hidden] { display: none; }
 .floorbar span { font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); padding: 0 6px 0 8px; }
 .floorbar button { font-size: 12.5px; padding: 5px 11px; border-radius: 8px; border: 1px solid transparent; background: none; color: var(--text-2); }
 .floorbar button:hover { background: rgba(var(--ink), 0.05); }

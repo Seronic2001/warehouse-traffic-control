@@ -1,18 +1,18 @@
-// Benchmark modal. Three sweeps, all run in a Web Worker:
+// Benchmark modal. Five sweeps, all run on a pool of Web Workers:
 //   A. strategies vs robot density (baseline / detection / ordered)
 //   B. safety margin under a hostile network (loss, delay, clock drift)
 //   C. recovery times after injected crashes, pauses and manager crashes
 //   D. congestion control over long runs
 //   E. multi-storey: throughput vs number of lifts and of floors
 import { MODE_SERIES } from '../render/palette.js';
-import { WAIT_BIN_SECONDS } from '../sim/simulation.js';
+import { DEFAULTS, WAIT_BIN_SECONDS } from '../sim/simulation.js';
 import { runPool, poolSize } from './pool.js';
 
 const $ = (id) => document.getElementById(id);
 const MODES = ['baseline', 'detect', 'ordered'];
 const PROTOCOLS = ['detect', 'ordered'];
 const DENSITIES = [50, 100, 150, 200];
-const TICK_S = 0.05;
+const TICK_S = DEFAULTS.tickMs / 1000;
 
 const SWEEP_A_TICKS = 2400; // 2 minutes
 const MARGINS = [0, 4, 8, 12, 16, 24, 32]; // ticks
@@ -110,8 +110,8 @@ export class Bench {
         prog.querySelector('span').textContent = `${done} / ${total} runs · ${this.pool.cores} worker${this.pool.cores === 1 ? '' : 's'}`;
         this.draw();
       },
-      onDone: (secs, cores) => {
-        prog.querySelector('span').textContent = `Done · seed ${this.app.cfg.seed}, ${this.pool.total} runs on ${cores} worker${cores === 1 ? '' : 's'} in ${secs.toFixed(0)}s`;
+      onDone: (secs, cores, failed) => {
+        prog.querySelector('span').textContent = `Done · seed ${this.app.cfg.seed}, ${this.pool.total} runs on ${cores} worker${cores === 1 ? '' : 's'} in ${secs.toFixed(0)}s` + (failed ? ` · ${failed} failed` : '');
         $('bench-run').disabled = false;
         $('bench-run').textContent = 'Run again';
         $('bench-table-btn').disabled = false;
@@ -179,7 +179,7 @@ export class Bench {
     grid.appendChild(
       section(
         'Lease safety margin under a hostile network',
-        `Leases + detection, 120 robots, ${HOSTILE.loss * 100}% message loss, delay up to ${HOSTILE.delayMax * 50} ms, clocks drifting up to ±${HOSTILE.clockDrift * 100}%, ${HOSTILE.leaseTicks * TICK_S} s leases, averaged over ${MARGIN_SEEDS.length} seeds. With too little margin, robots act on leases that are about to run out. With too much, they can almost never move.`,
+        `Leases + detection, 120 robots, ${HOSTILE.loss * 100}% message loss, delay up to ${HOSTILE.delayMax * DEFAULTS.tickMs} ms, clocks drifting up to ±${HOSTILE.clockDrift * 100}%, ${HOSTILE.leaseTicks * TICK_S} s leases, averaged over ${MARGIN_SEEDS.length} seeds. With too little margin, robots act on leases that are about to run out. With too much, they can almost never move.`,
       ),
     );
     const mx = MARGINS.map((m) => m * TICK_S);
@@ -223,7 +223,7 @@ export class Bench {
     grid.appendChild(
       section(
         'Multi-storey: lifts are the bottleneck',
-        `${STOREY.robots} robots spread over the floors, ${(STOREY_TICKS * TICK_S) / 60} minutes, ${STOREY_SEEDS.length} seeds. Pickups are anywhere; packing stations are on the ground floor, so most jobs need a ride up and a ride down. Each lift carries one robot at a time.`,
+        `${STOREY.robots} robots spread over the floors, ${(STOREY_TICKS * TICK_S) / 60} minutes, ${STOREY_SEEDS.length} seeds. Pickups are on every floor; packing stations are on the ground and first floor, and 30% of jobs drop on the other station floor, so many jobs need a ride. Each lift carries one robot at a time.`,
       ),
     );
     grid.appendChild(lineChart({ title: 'Throughput vs lifts', note: 'Tasks per minute, 3 floors', xs: LIFT_COUNTS, xFmt: (n) => `${n}`, xName: 'lifts', fmt: (v) => v.toFixed(0), series: [{ label: det.label, color: det.hex, values: LIFT_COUNTS.map((n) => e('lifts', n, per)) }] }));

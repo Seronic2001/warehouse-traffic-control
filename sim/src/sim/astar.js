@@ -7,16 +7,15 @@
 // 8 = start of the search, 9 = just arrived by car. A shaft can only be
 // entered from its bay's entry cell, a robot that drove in must ride, and
 // it leaves by the exit cell only after the ride.
-import { W, H, RW, RH, RX, RF, NF, LIFT_FLOOR_TICKS, rideTicks, getLayout } from './layout.js';
+import { W, H, RW, RH, RX, RF, NF, MOVE_TICKS, LIFT_FLOOR_TICKS, rideTicks, getLayout } from './layout.js';
 
 const DX = [1, 0, -1, 0];
 const DY = [0, 1, 0, -1];
 const TURN_COST = 0.35;
 const WRONG_WAY_COST = 3;
 const STATION_COST = 8;
-const CELL_TICKS = 6; // a one-cell move (default cfg.moveTicks), to price rides in cells
-const RIDE_COST = (floors) => rideTicks(floors) / CELL_TICKS;
-const FLOOR_H = LIFT_FLOOR_TICKS / CELL_TICKS; // heuristic per floor apart
+const RIDE_COST = (floors) => rideTicks(floors) / MOVE_TICKS; // rides are priced in cells
+const FLOOR_H = LIFT_FLOOR_TICKS / MOVE_TICKS; // heuristic per floor apart
 
 // Search buffers, sized for the largest layout seen so far.
 let S = 0;

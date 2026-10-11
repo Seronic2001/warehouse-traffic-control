@@ -9,6 +9,7 @@ cd sim
 npm install
 npm run dev        # http://localhost:5173
 npm run build      # static build in sim/dist/ (any static host works)
+npm test           # headless checks: safety under failures, replay, every mode on every building
 ```
 
 ## What to show in a demo
@@ -51,7 +52,7 @@ Robots, managers and the world only talk to each other through network messages.
 
 ### Replay
 
-The simulation is deterministic: the same seed and the same user actions at the same ticks always produce the same run. History therefore keeps a deep copy of the whole simulation every 2.5 s (a few milliseconds each) plus the log of user actions. To show an earlier moment, it restores the nearest copy and steps forward, replaying the actions on the way. A seek takes well under 0.2 s. A headless test checks that a rewound run ends in exactly the same state as an uninterrupted one, including after branching.
+The simulation is deterministic: the same seed and the same user actions at the same ticks always produce the same run. History therefore keeps a deep copy of the whole simulation every 2.5 s (a few milliseconds each) plus the log of user actions. To show an earlier moment, it restores the nearest copy and steps forward, replaying the actions on the way. A seek takes well under 0.2 s. A headless test (`sim/test/replay.test.js`) checks that a rewound run ends in exactly the same state as an uninterrupted one, including after branching.
 
 ### Congestion control
 
@@ -79,7 +80,7 @@ A dead zone cuts every robot inside it off from the network, in both directions.
 
 ### Region manager crash and reconciliation
 
-A crashed manager loses its whole reservation table. On restart it increments an **incarnation number**, the only state it keeps on stable storage. It broadcasts `RECONCILE` and rebuilds the table from the robots' `REPORT`s (leases they still hold, and where each robot is). Requests that arrive in the meantime are buffered and get no grant. Any occupied cell nobody claims becomes Blocked. Every epoch issued after the restart is above `incarnation × 1,000,000`, so it is higher than any epoch from an earlier life, and a stale lease can never pass fencing.
+A crashed manager loses its whole reservation table. On restart it increments an **incarnation number**, the only state it keeps on stable storage. It broadcasts `RECONCILE` and rebuilds the table from the robots' `REPORT`s (leases they still hold, and where each robot is). Requests that arrive in the meantime are buffered and get no grant. A report is only a claim: a robot that was cut off can still believe in a lease that expired and went to someone else before the crash. So a claim on a cell the floor sensor shows another robot in is turned down, and any occupied cell left without an owner becomes Blocked. Reconciliation ends as soon as the whole fleet has answered, or after 1.5 s if some robot is crashed, frozen or cut off. Every epoch issued after the restart is above `incarnation × 1,000,000`, so it is higher than any epoch from an earlier life, and a stale lease can never pass fencing.
 
 ### Safety guarantees under stress
 
@@ -93,12 +94,12 @@ A crashed manager loses its whole reservation table. On restart it increments an
 * Detection peaks at about 125 tasks/min around 150 robots. In 2-minute runs at 200 robots the floor saturates and throughput falls to about 60–80, still with almost no deadlocks (0.07 per 1,000 moves).
 * Congestion control, total tasks over 14 simulated minutes, mean of 4 seeds: 120 robots 1290 → 1474 (+14%), 150 robots 890 → 1447 (+63%), 200 robots 769 → 995 (+29%). Without it, 150 robots sag from about 120 to about 30 tasks/min over the run; with it they hold 90–120. At 200 robots every region is busy, so there is little room to route around, and the floor is simply over capacity. More dedicated parking or wider highways would be the next step there.
 * Safety margin under a hostile network (20% loss, delay up to 300 ms, ±20% drift, 2 s leases) has a clear sweet spot. With no margin, robots lose about 22 leases per 1,000 moves. Around 0.6–0.8 s, losses drop to about 14 and throughput peaks. At 1.6 s, the margin eats most of the lease and robots can almost never move.
-* Recovery: a crashed robot's lease is taken back after about 2.7 s and its Blocked cell is cleared after about 7.3 s. A paused robot resyncs 0.3 s after waking. A crashed manager is granting again after about 4.3 s (4 s down plus reconciliation).
+* Recovery: a crashed robot's lease is taken back after about 2.7 s and its Blocked cell is cleared after about 7.3 s. A paused robot resyncs 0.3 s after waking. A crashed manager is granting again after about 4.3 s when every robot answers (4 s down plus reconciliation), and after 5.5 s when it has to wait out the reconciliation timeout, as it does in this benchmark whenever a crashed robot is still on the floor.
 * Ordered acquisition, as implemented here (queue for the next cell, then grab the rest of the segment all-or-nothing with backoff), works at low density but collapses at 200 robots from repeated backoff. That is worth discussing in the report rather than hiding.
 
 ### Distributed vs centralised (`C`)
 
-The centralised baseline is `mode: 'central'`: one manager (M0) owns all cells, needs no gossip, and runs cycle detection on its full wait-for graph every 0.4 s (a cycle counts once any member has waited as long as a robot waits before probing, the same rule as the probes). `mgrRate` caps how many messages one coordinator node can handle per tick; extra messages wait in its inbox. It is 0 (unlimited) by default, so existing modes behave exactly as before.
+The centralised baseline is `mode: 'central'`: one manager (M0) owns all cells, needs no gossip, and runs cycle detection on its full wait-for graph every 0.4 s (a cycle counts once any member has waited as long as a robot waits before probing, the same rule as the probes). `mgrRate` caps how many messages one coordinator node can handle per tick; extra messages wait in its inbox. It is 0 (unlimited) by default, so existing modes behave exactly as before. On several floors the lifts keep their own lift managers, so the server cannot see a wait for a car; a robot waiting for a lift still sends probes, which is how a deadlock through a lift is found in this mode.
 
 The **Centralised** mode tab runs it live. The 16 region-manager nodes are replaced by one server tower over the middle of the floor. Every request, grant and renewal flies to that tower. Crashing it from any cell's inspector turns the whole floor red until it has reconciled.
 
@@ -122,7 +123,7 @@ In short, a fast enough central server matches the distributed design in normal 
 
 ### Multi-storey warehouse
 
-Click the **Multi-storey** tab in the top bar (leases + detection on 3 floors), or set **Floors** (1–3) and **Lifts** (1–8) in the left panel. The other mode tabs switch back to a single floor. Each floor is the same 48×32 grid with its own 16 region managers. Pickups are on every floor. Packing stations are on the **ground and first floor**, and a job can drop on either. 70% of jobs drop on the station floor nearest their pickup: their own floor, or the first floor for second-floor pickups. The other 30% drop on the other station floor. So ground- and first-floor robots serve both station floors, and second-floor robots deliver to either. Lifts are drawn in light green, deeper green while a robot holds the car. With one floor (the default), every run is identical to the single-floor simulator.
+Click the **Multi-storey** tab in the top bar (leases + detection on 3 floors), or set **Floors** (1–3) and **Lifts** (1–8) in the left panel. The other mode tabs switch back to a single floor. Each floor is the same 48×32 grid with its own 16 region managers. Pickups are on every floor. Packing stations are on the **ground and first floor**, and a job can drop on either. 70% of jobs drop on the station floor nearest their pickup: their own floor, or the first floor for second-floor pickups. The other 30% drop on the other station floor. So ground- and first-floor robots serve both station floors, and second-floor robots deliver to either. Lifts are drawn in light green, deeper green while a robot holds the car. With one floor (the default), every run is identical to the single-floor simulator. In Baseline mode there are no lift managers: a robot calls the car itself, and the lift door only lets one robot in at a time.
 
 **Layout.** Each lift sits in the middle of an aisle at the same spot on every floor. That aisle becomes a one-way lobby of six cells: two queue cells, the entry, the shaft, the exit and one more. Robots waiting for the car queue inside the lobby, off the highways, and never meet a robot leaving the car head-on. (An earlier version put lifts in the outer wall. Their queues spilled onto the ring road that also serves the packing stations, and throughput fell as robots were added.)
 

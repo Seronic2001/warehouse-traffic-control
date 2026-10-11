@@ -12,6 +12,7 @@ export function runPool(jobs, { onResult, onDone }) {
   const workers = [];
   let next = 0;
   let done = 0;
+  let failed = 0;
   const stop = () => {
     for (const w of workers) w.terminate();
     workers.length = 0;
@@ -21,13 +22,22 @@ export function runPool(jobs, { onResult, onDone }) {
   };
   for (let i = 0; i < cores; i++) {
     const w = new Worker(new URL('../sim/bench.worker.js', import.meta.url), { type: 'module' });
-    w.onmessage = (e) => {
-      done++;
-      onResult(e.data.id, e.data.summary, done, jobs.length);
-      if (done === jobs.length) {
+    const settle = () => {
+      if (++done === jobs.length) {
         stop();
-        onDone((performance.now() - t0) / 1000, cores);
+        onDone((performance.now() - t0) / 1000, cores, failed);
       } else feed(w);
+    };
+    w.onmessage = (e) => {
+      onResult(e.data.id, e.data.summary, done + 1, jobs.length);
+      settle();
+    };
+    // A run that throws leaves its points out of the charts; the worker
+    // carries on with the next job.
+    w.onerror = (e) => {
+      console.error('Benchmark run failed:', e.message);
+      failed++;
+      settle();
     };
     workers.push(w);
     feed(w);

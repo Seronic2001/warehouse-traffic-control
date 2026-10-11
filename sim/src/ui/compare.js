@@ -8,12 +8,13 @@
 //   K. equal hardware: every coordinator node handles the same messages per second
 //   F. coordinator crashes every 45 s
 import { MODE_SERIES } from '../render/palette.js';
+import { DEFAULTS } from '../sim/simulation.js';
 import { lineChart, section } from './bench.js';
 import { runPool, poolSize } from './pool.js';
 
 const $ = (id) => document.getElementById(id);
 const MODES = ['detect', 'central'];
-const TICK_S = 0.05;
+const TICK_S = DEFAULTS.tickMs / 1000;
 const SEEDS = [1, 2, 3];
 const DENSITIES = [50, 100, 150, 200];
 const S_TICKS = 2400; // 2 minutes
@@ -91,8 +92,8 @@ export class Compare {
         prog.querySelector('span').textContent = `${done} / ${total} runs · ${this.pool.cores} worker${this.pool.cores === 1 ? '' : 's'}`;
         if (done % 6 === 0 || done === total) this.draw();
       },
-      onDone: (secs, cores) => {
-        prog.querySelector('span').textContent = `Done · ${this.pool.total} runs on ${cores} worker${cores === 1 ? '' : 's'} in ${secs.toFixed(0)}s`;
+      onDone: (secs, cores, failed) => {
+        prog.querySelector('span').textContent = `Done · ${this.pool.total} runs on ${cores} worker${cores === 1 ? '' : 's'} in ${secs.toFixed(0)}s` + (failed ? ` · ${failed} failed` : '');
         $('cmp-run').disabled = false;
         $('cmp-run').textContent = 'Run again';
       },

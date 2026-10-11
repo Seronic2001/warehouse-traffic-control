@@ -6,7 +6,7 @@ import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
 import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
-import { xOf, yOf, floorOf, fmtCell, RF } from '../sim/layout.js';
+import { xOf, yOf, floorOf, RF } from '../sim/layout.js';
 import { wx, wz, levelOf } from './warehouse.js';
 import { theme } from './theme.js';
 
@@ -422,12 +422,20 @@ export class LiveView {
     const mk = (width, opacity) => {
       const mat = new LineMaterial({ linewidth: width, vertexColors: true, transparent: true, opacity, depthWrite: false, worldUnits: false });
       mat.resolution.copy(resolution);
+      // One geometry for the life of the view, sized for MAX_ARCS. Each
+      // frame writes the arcs into its two buffers (pos and col are the
+      // arrays the geometry draws from), uploads the part in use and sets
+      // how many segments to draw.
+      const pos = new Float32Array(MAX_ARCS * ARC_SEG * 6), col = new Float32Array(MAX_ARCS * ARC_SEG * 6);
       const geo = new LineSegmentsGeometry();
+      geo.setPositions(pos);
+      geo.setColors(col);
+      geo.instanceCount = 0;
       const line = new LineSegments2(geo, mat);
       line.frustumCulled = false;
       line.renderOrder = 3;
       this.group.add(line);
-      return { line, mat, pos: new Float32Array(MAX_ARCS * ARC_SEG * 6), col: new Float32Array(MAX_ARCS * ARC_SEG * 6) };
+      return { line, mat, pos, col, buffers: [geo.attributes.instanceStart.data, geo.attributes.instanceColorStart.data] };
     };
     this.waitArcs = mk(3, 0.95);
     this.cycleArcs = mk(4.5, 1);
@@ -613,7 +621,6 @@ export class LiveView {
     if (!mo || !mo.ride) return this.cellY(r.cell);
     let tt = t;
     if (!r.alive) tt = Math.min(tt, r.crashTick);
-    if (r.paused) tt = Math.min(tt, r.pauseTick ?? tt);
     const k = Math.min(1, Math.max(0, (tt - mo.start) / (mo.t1 - mo.start)));
     const a = this.cellY(mo.from), b = this.cellY(mo.to);
     return a + (b - a) * easeInOut(k);
@@ -796,11 +803,12 @@ export class LiveView {
     for (const [buf, n] of [[W8, nw], [CY, nc]]) {
       buf.line.visible = n > 0;
       if (!n) continue;
-      buf.line.geometry.dispose();
-      const g = new LineSegmentsGeometry();
-      g.setPositions(buf.pos.subarray(0, n * ARC_SEG * 6));
-      g.setColors(buf.col.subarray(0, n * ARC_SEG * 6));
-      buf.line.geometry = g;
+      buf.line.geometry.instanceCount = n * ARC_SEG;
+      for (const data of buf.buffers) {
+        data.clearUpdateRanges();
+        data.addUpdateRange(0, n * ARC_SEG * 6);
+        data.needsUpdate = true;
+      }
     }
     this.heads.count = nh;
     this.heads.instanceMatrix.needsUpdate = true;
@@ -1131,7 +1139,7 @@ export class LiveView {
         if (this.view < 0 && node.f !== undefined && sim.layout.floors > 1 && !st) continue;
         const load = this.layers.load && sim.mode !== 'baseline' && node.lift === undefined ? `<small>${Math.round((mgr.owned.size / mgr.cap) * 100)}%</small>` : '';
         const name = node.central ? 'Central server M0' : node.lift !== undefined ? `Lift L${node.lift} · M${node.id}` : `M${node.id}`;
-        const txt = mgr.state === 'DOWN' ? `${name} · DOWN` : mgr.state === 'RECONCILING' ? `${name} · reconciling ${mgr.reports?.size ?? 0}/${sim.robots.filter((r) => r.alive).length}` : `${name}${load}`;
+        const txt = mgr.state === 'DOWN' ? `${name} · DOWN` : mgr.state === 'RECONCILING' ? `${name} · reconciling ${mgr.reports?.size ?? 0}/${sim.robots.length}` : `${name}${load}`;
         this.label('m' + node.id, `mlabel${this.spot?.managers === 'hi' ? ' hi' : ''}${st}`, txt, node.pos.x, node.group.position.y + 0.45, node.pos.z);
       }
     }
@@ -1262,4 +1270,3 @@ function stripeTexture() {
   return t;
 }
 
-export { fmtCell };

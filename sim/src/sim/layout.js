@@ -34,6 +34,7 @@ const STATION_COLS = [6, 18, 29, 41];
 const LIFT_SPOTS = [[18, 9], [30, 17], [30, 9], [18, 17], [8, 9], [42, 17], [42, 9], [8, 17]];
 export const MAX_LIFTS = LIFT_SPOTS.length;
 export const STATION_FLOORS = 2; // ground and first floor have packing stations
+export const MOVE_TICKS = 6; // a one-cell move (the default cfg.moveTicks)
 // Car timing, in ticks: doors open and close once per ride, plus travel.
 export const LIFT_DOOR_TICKS = 8;
 export const LIFT_FLOOR_TICKS = 24;
@@ -158,7 +159,17 @@ function buildFloor() {
     if (nearShelf && !hwyRow.has(y) && !hwyCol.has(x)) pickups.push(c);
   }
 
-  return { W, H, N, NF, floors: 1, R: RF, RW, RH, RX, RY, shelf, wall, solid, station, bay, box, noCrossH, noCrossV, laneH, laneV, stations, pickups, free, aisleCols, hwyRows: HWY_ROWS, hwyCols: HWY_COLS, lifts: [], lift: null, liftIn: null, liftOut: null };
+  return tables({ W, H, N, NF, floors: 1, R: RF, RW, RH, RX, RY, shelf, wall, solid, station, bay, box, noCrossH, noCrossV, laneH, laneV, stations, pickups, free, aisleCols, hwyRows: HWY_ROWS, hwyCols: HWY_COLS, lifts: [], lift: null, liftIn: null, liftOut: null });
+}
+
+// Tables derived from a finished layout: the open cells in each region (a
+// lift shaft belongs to its lift, not to the region around it) and the
+// floors that have packing stations.
+function tables(L) {
+  L.regionCap = new Uint16Array(L.R);
+  for (let c = 0; c < L.N; c++) if (!L.solid[c] && !(L.lift && L.lift[c])) L.regionCap[regionOf(c)]++;
+  L.stationFloors = [...new Set(L.stations.map(floorOf))];
+  return L;
 }
 
 // A drive-through bay in the wall on floor f: [x, y, flow along the wall
@@ -230,5 +241,5 @@ function stack(one, floors, nLifts) {
   }
   L.pickups = L.pickups.filter((c) => !L.lobby[c]);
   L.free = L.free.filter((c) => !L.lobby[c]);
-  return L;
+  return tables(L);
 }

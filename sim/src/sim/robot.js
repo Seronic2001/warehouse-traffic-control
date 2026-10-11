@@ -100,6 +100,8 @@ export class Robot {
     this.renewSince = null; // first renewal still waiting for an answer // last tick a move was refused for lack of lease time
     this.motion = null;
     this.crashTick = 0;
+    this.altCell = -1; // hasAlternative() cache: the question last answered
+    this.segPath = null; // segment() cache: the path it was computed for
   }
 
   get protocol() {
@@ -250,9 +252,16 @@ export class Robot {
     return Math.min(n, p.length);
   }
 
-  // Cells to acquire, always requested in global cell order.
+  // Cells to acquire, always requested in global cell order. Cached until
+  // the path changes: it is replaced on a replan and shortened on arrival.
   segment() {
-    return this.path.slice(0, this.aheadCount()).sort((a, b) => a - b);
+    const p = this.path;
+    if (this.segPath !== p || this.segLen !== p.length) {
+      this.segPath = p;
+      this.segLen = p.length;
+      this.segCells = p.slice(0, this.aheadCount()).sort((a, b) => a - b);
+    }
+    return this.segCells;
   }
 
   wanted(c) {
@@ -298,8 +307,12 @@ export class Robot {
     const t = this.sim.tick;
     const cfg = this.sim.cfg;
     // Centralised mode: the coordinator sees the whole wait-for graph and
-    // finds cycles itself, so robots never probe.
-    if (cfg.mode === 'central') return;
+    // finds cycles itself, so robots don't probe. The exception is a robot
+    // waiting for a lift car: lift managers are separate processes, so that
+    // edge is missing from the coordinator's graph, and only a probe can
+    // find a cycle through it.
+    const L = this.sim.layout;
+    if (cfg.mode === 'central' && !(L.lift && L.lift[this.waitCell])) return;
     if (this.waitingFor < 0 || t - this.waitSince < cfg.probeAfter || t - this.lastProbe < cfg.probeEvery) return;
     this.lastProbe = t;
     this.sim.metrics.probes++;
@@ -316,11 +329,12 @@ export class Robot {
   // Could this robot reach its target without the cell it is waiting for?
   // Probes carry this so the cycle can pick a victim that is able to move.
   hasAlternative() {
-    const key = this.cell * 4096 + this.waitCell;
-    if (this.altKey === key) return this.altValue;
-    const wc = this.waitCell;
-    const path = astar(this.cell, this.target, (c) => c === wc, true, null, this.sim.layout);
-    this.altKey = key;
+    const wc = this.waitCell, target = this.target;
+    if (this.altCell === this.cell && this.altWait === wc && this.altTarget === target) return this.altValue;
+    const path = astar(this.cell, target, (c) => c === wc, true, null, this.sim.layout);
+    this.altCell = this.cell;
+    this.altWait = wc;
+    this.altTarget = target;
     this.altValue = !!path && path[0] !== wc;
     return this.altValue;
   }
@@ -452,7 +466,6 @@ export class Robot {
   // Deadlock victim: give up the request, avoid that cell for a while, replan.
   yieldNow(key, standing = false) {
     const sim = this.sim;
-    this.wasWanted = standing;
     const t = sim.tick;
     const c = this.waitCell;
     this.send('m' + this.sim.mgrOf(c), { type: 'CANCEL', robot: this.id, cell: c });
@@ -464,7 +477,7 @@ export class Robot {
     this.releaseUnwanted();
     // Standing in the cell the robot behind wants: cancelling frees nothing,
     // so step aside into an empty neighbouring cell (a normal leased move).
-    if (this.wasWanted) {
+    if (standing) {
       const esc = this.escapeCell();
       if (esc >= 0) this.path = [esc];
     }
@@ -610,7 +623,7 @@ export class Robot {
     // (their own floor, if it has stations), 30% on another station floor.
     const px = xOf(pickup), py = yOf(pickup), pf = floorOf(pickup);
     let stations = L.stations;
-    const stationFloors = [...new Set(stations.map(floorOf))];
+    const stationFloors = L.stationFloors;
     if (stationFloors.length > 1) {
       const home = stationFloors.reduce((a, b) => (Math.abs(b - pf) < Math.abs(a - pf) ? b : a));
       const f = sim.rng.chance(SAME_FLOOR_DROP) ? home : sim.rng.pick(stationFloors.filter((x) => x !== home));

@@ -2,7 +2,7 @@
 // ticks, delivers network messages, detects collisions (including head-on
 // swaps), and enforces fencing by rejecting moves carrying a stale epoch.
 import { Rng } from './rng.js';
-import { getLayout, regionOf, fmtCell, xOf, yOf, floorOf, cellOf, rideTicks, LIFT_FLOOR_TICKS } from './layout.js';
+import { getLayout, regionOf, fmtCell, xOf, yOf, floorOf, cellOf, rideTicks, MOVE_TICKS, LIFT_FLOOR_TICKS } from './layout.js';
 import { Network } from './network.js';
 import { RegionManager, fmtEpoch } from './manager.js';
 import { LiftManager } from './lift.js';
@@ -15,7 +15,7 @@ export const DEFAULTS = {
   lifts: 4, // lifts joining the floors (ignored with one floor)
   mode: 'detect', // 'baseline' | 'detect' | 'ordered' | 'central'
   tickMs: 50,
-  moveTicks: 6,
+  moveTicks: MOVE_TICKS,
   turnTicks: 2,
   delayMin: 1,
   delayMax: 3,
@@ -231,49 +231,55 @@ export class Simulation {
   // The actuator. Returns false if the move is fenced off.
   tryMove(r, to, epoch) {
     const t = this.tick;
-    if (this.mode !== 'baseline') {
-      if (this.fenceOwner[to] !== r.id || this.fenceEpoch[to] !== epoch) {
-        this.metrics.fenced++;
-        const cur = this.fenceEpoch[to];
-        const holder = this.fenceOwner[to];
-        this.event('fenced', `World rejected R${r.id} → ${fmtCell(to)}: epoch ${fmtEpoch(epoch)} is stale (current ${fmtEpoch(cur)}${holder >= 0 ? `, owner R${holder}` : ''})`, { cell: to, robots: holder >= 0 ? [r.id, holder] : [r.id] });
-        this.burst('fenced', to, { epoch, cur });
-        this.flag('fenced');
-        return false;
-      }
-      this.managers[this.mgrOf(to)].markOccupied(to, r.id);
+    const protocol = this.mode !== 'baseline';
+    if (protocol && (this.fenceOwner[to] !== r.id || this.fenceEpoch[to] !== epoch)) {
+      this.metrics.fenced++;
+      const cur = this.fenceEpoch[to];
+      const holder = this.fenceOwner[to];
+      this.event('fenced', `World rejected R${r.id} → ${fmtCell(to)}: epoch ${fmtEpoch(epoch)} is stale (current ${fmtEpoch(cur)}${holder >= 0 ? `, owner R${holder}` : ''})`, { cell: to, robots: holder >= 0 ? [r.id, holder] : [r.id] });
+      this.burst('fenced', to, { epoch, cur });
+      this.flag('fenced');
+      return false;
     }
     const L = this.layout;
-    if (L.lift && L.lift[to]) {
+    const car = L.lift && L.lift[to] ? this.cars[L.lift[to] - 1] : null;
+    const at = floorOf(r.cell);
+    if (car) {
       // Lift interlock: the car must be parked at this floor, doors open.
-      const car = this.cars[L.lift[to] - 1];
-      const at = floorOf(r.cell);
-      if (car.moving || car.floor !== at) {
+      const away = car.moving || car.floor !== at;
+      if (!protocol) {
+        // Baseline has no lift manager. The robot presses the call button
+        // itself and waits at the door, which stays shut while the car is
+        // away or has a robot in it. Waiting there is not a fenced move.
+        if (away) this.callCar(car.id, at);
+        if (away || (!L.lift[r.cell] && L.lifts[car.id].shafts.some((c) => this.physCount[c] > 0))) return false;
+      } else if (away) {
         this.metrics.fenced++;
         this.event('fenced', `Lift L${car.id} refused R${r.id}: the car is not at floor ${at}`, { cell: to, robots: [r.id] });
         this.flag('fenced');
         return false;
       }
-      if (L.lift[r.cell]) {
-        // A ride: robot and car move to the other floor together.
-        const dur = rideTicks(Math.abs(floorOf(to) - at));
-        r.motion = { from: r.cell, to, t0: t, start: t, t1: t + dur, h0: r.heading, h1: r.heading, ride: true };
-        car.moving = { from: at, to: floorOf(to), t0: t, t1: t + dur, rider: r.id };
-        if (this.mode !== 'baseline') {
-          const e = this.managers[this.mgrOf(to)].entries.get(to);
-          if (e && e.expiry - t < dur) this.metrics.riskyMoves++;
-        }
-        this.metrics.rides++;
-        this.setFootprint(r, [r.cell, to]);
-        return true;
+    }
+    if (protocol) this.managers[this.mgrOf(to)].markOccupied(to, r.id);
+    if (car && L.lift[r.cell]) {
+      // A ride: robot and car move to the other floor together.
+      const dur = rideTicks(Math.abs(floorOf(to) - at));
+      r.motion = { from: r.cell, to, t0: t, start: t, t1: t + dur, h0: r.heading, h1: r.heading, ride: true };
+      car.moving = { from: at, to: floorOf(to), t0: t, t1: t + dur, rider: r.id };
+      if (protocol) {
+        const e = this.managers[this.mgrOf(to)].entries.get(to);
+        if (e && e.expiry - t < dur) this.metrics.riskyMoves++;
       }
+      this.metrics.rides++;
+      this.setFootprint(r, [r.cell, to]);
+      return true;
     }
     const dx = xOf(to) - xOf(r.cell), dy = yOf(to) - yOf(r.cell);
     const heading = Math.atan2(dx, dy);
     let turn = 0;
     if (Math.abs(angleDiff(heading, r.heading)) > 0.1) turn = this.cfg.turnTicks;
     r.motion = { from: r.cell, to, t0: t, start: t + turn, t1: t + turn + this.cfg.moveTicks, h0: r.heading, h1: heading };
-    if (this.mode !== 'baseline') {
+    if (protocol) {
       // Ground truth: would this lease run out before the robot is inside?
       const e = this.managers[this.mgrOf(to)].entries.get(to);
       if (e && e.expiry - t < turn + this.cfg.moveTicks) this.metrics.riskyMoves++;
@@ -301,50 +307,50 @@ export class Simulation {
     if (!mo) return [xOf(r.cell), yOf(r.cell)];
     let tt = t;
     if (!r.alive) tt = Math.min(tt, r.crashTick);
-    if (r.paused) tt = Math.min(tt, r.pauseTick ?? tt);
     const k = Math.min(1, Math.max(0, (tt - mo.start) / (mo.t1 - mo.start)));
     return [xOf(mo.from) + (xOf(mo.to) - xOf(mo.from)) * k, yOf(mo.from) + (yOf(mo.to) - yOf(mo.from)) * k];
   }
 
+  // Robots are bucketed by the grid cell nearest their position (a linked
+  // list per bucket, in module-level scratch arrays), then each is compared
+  // with the robots in the nine buckets around it.
   detectCollisions() {
     const t = this.tick;
-    const grid = new Map();
-    const pos = [];
-    for (const r of this.robots) {
-      if (r.removed) continue;
+    const robots = this.robots;
+    const n = robots.length;
+    const { head, next, key, px, py } = collisionGrid(this.layout.floors, n);
+    for (let i = 0; i < n; i++) {
+      const r = robots[i];
+      if (r.removed) {
+        key[i] = -1;
+        continue;
+      }
       const p = this.posOf(r, t);
-      pos[r.id] = p;
-      const key = cellKey(floorOf(r.cell), Math.round(p[0]), Math.round(p[1]));
-      let b = grid.get(key);
-      if (!b) grid.set(key, (b = []));
-      b.push(r.id);
+      px[i] = p[0];
+      py[i] = p[1];
+      const k = (key[i] = cellKey(floorOf(r.cell), Math.round(p[0]), Math.round(p[1])));
+      next[i] = head[k] - 1;
+      head[k] = i + 1;
     }
     const now = new Set();
-    for (const r of this.robots) {
-      if (r.removed) continue;
-      const [x, y] = pos[r.id];
-      const cx = Math.round(x), cy = Math.round(y), f = floorOf(r.cell);
-      for (let oy = -1; oy <= 1; oy++) {
+    for (let i = 0; i < n; i++) {
+      if (key[i] < 0) continue;
+      const x = px[i], y = py[i];
+      for (let oy = -GRID; oy <= GRID; oy += GRID) {
         for (let ox = -1; ox <= 1; ox++) {
-          const b = grid.get(cellKey(f, cx + ox, cy + oy));
-          if (!b) continue;
-          for (const o of b) {
-            if (o <= r.id) continue;
-            const q = pos[o];
-            const d = Math.hypot(q[0] - x, q[1] - y);
-            if (d < 0.72) {
-              const key = r.id * 4096 + o;
-              now.add(key);
-              if (!this.contacts.has(key)) {
-                this.metrics.collisions++;
-                this.burst('collision', -1, { x: (x + q[0]) / 2, y: (y + q[1]) / 2 });
-                if (this.mode !== 'baseline') this.event('collision', `COLLISION between R${r.id} and R${o}`, { robots: [r.id, o] });
-              }
-            }
+          for (let o = head[key[i] + oy + ox] - 1; o >= 0; o = next[o]) {
+            if (o <= i || Math.hypot(px[o] - x, py[o] - y) >= 0.72) continue;
+            const pair = i * 4096 + o;
+            now.add(pair);
+            if (this.contacts.has(pair)) continue;
+            this.metrics.collisions++;
+            this.burst('collision', -1, { x: (x + px[o]) / 2, y: (y + py[o]) / 2 });
+            if (this.mode !== 'baseline') this.event('collision', `COLLISION between R${i} and R${o}`, { robots: [i, o] });
           }
         }
       }
     }
+    for (let i = 0; i < n; i++) if (key[i] >= 0) head[key[i]] = 0;
     this.contacts = now;
   }
 
@@ -522,6 +528,9 @@ export class Simulation {
     if (last !== undefined && t - last < 80) return;
     this.recentDeadlocks.set(key, t);
     if (this.recentDeadlocks.size > 500) this.recentDeadlocks.clear();
+    // Forget cycles nobody yielded for (a lost ABORT, a victim that had just
+    // yielded): they are detected again if they are still there.
+    for (const [k, c] of this.openCycles) if (t - c.detected > 400) this.openCycles.delete(k);
     this.metrics.deadlocks++;
     const members = cycle.map((id) => this.robots[id]);
     const formed = Math.max(...members.map((r) => r.waitSince));
@@ -658,7 +667,22 @@ export class Simulation {
 export const WAIT_BIN_SECONDS = WAIT_BIN;
 
 // Collision-grid bucket: floor, then row and column with a one-cell border.
-const cellKey = (f, x, y) => (f * 64 + y + 1) * 64 + x + 1;
+const GRID = 64;
+const cellKey = (f, x, y) => (f * GRID + y + 1) * GRID + x + 1;
+
+// Scratch arrays for detectCollisions, shared by every simulation in this
+// thread and grown as needed. `head` is left all zero between calls.
+const grid = { head: new Int16Array(0), next: new Int16Array(0), key: new Int32Array(0), px: new Float32Array(0), py: new Float32Array(0) };
+function collisionGrid(floors, robots) {
+  if (grid.head.length < floors * GRID * GRID) grid.head = new Int16Array(floors * GRID * GRID);
+  if (grid.next.length < robots) {
+    grid.next = new Int16Array(robots);
+    grid.key = new Int32Array(robots);
+    grid.px = new Float32Array(robots);
+    grid.py = new Float32Array(robots);
+  }
+  return grid;
+}
 
 function angleDiff(a, b) {
   let d = a - b;

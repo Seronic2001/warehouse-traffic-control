@@ -14,7 +14,7 @@ import { theme } from './theme.js';
 
 export const wx = (x) => x - W / 2 + 0.5;
 export const wz = (y) => y - H / 2 + 0.5;
-export const STOREY_H = 10; // world units between floors
+const STOREY_H = 10; // world units between floors
 export const levelOf = (f) => f * STOREY_H;
 
 const PX = 64; // floor texture pixels per cell
@@ -68,7 +68,8 @@ export function buildWarehouse(scene, L0, renderer) {
       o.removeFromParent();
       o.traverse((m) => {
         m.geometry?.dispose();
-        if (m.material && !m.material.shared) m.material.dispose?.();
+        m.material?.map?.dispose(); // each storey's painted floor is a large texture
+        m.material?.dispose();
       });
     }
     dimmables.length = 0;
@@ -294,7 +295,7 @@ function paintFloor(L, cv, f = 0) {
     }
   }
 
-  // station bays (ground floor only)
+  // station bays (on the floors that have them)
   for (const c of L.stations) {
     if (floorOf(c) !== f) continue;
     const px = xOf(c) * PX, py = yOf(c) * PX;
@@ -492,7 +493,7 @@ function buildStations(group, L, f = 0) {
 
 // ───────────────────────────── region managers ─────────────────────────────
 
-export const MANAGER_Y = 4.4;
+const MANAGER_Y = 4.4;
 
 function buildManagerNodes(group, L) {
   const nodes = [];
@@ -533,7 +534,7 @@ function managerNode(group, id, cx, y, cz, coreGeo, ringGeo, beamGeo, beamY) {
 // the top storey), standing in for all the region managers. Same parts as a
 // region node (core, ring, beam), so the live view drives it the same way.
 // Hidden until a centralised run is shown.
-export const CENTRAL_Y = 8.2;
+const CENTRAL_Y = 8.2;
 
 function buildCentralNode(group, L) {
   const g = new THREE.Group();
@@ -609,4 +610,3 @@ function buildLifts(group, L) {
   return out;
 }
 
-export { cellOf };

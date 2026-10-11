@@ -37,8 +37,6 @@ export class Timeline {
     this.robot = -1;
     this.win = 8;
     this.hidden = new Set();
-    this.hits = [];
-    this.hover = null;
     this.mouse = null;
     this.lastDraw = 0;
     this.canvas = $('tl-canvas');
@@ -49,7 +47,7 @@ export class Timeline {
       if (!b) return;
       this.win = +b.dataset.win;
       this.syncHeader();
-      this.draw(true);
+      this.draw();
     });
     $('tl-groups').addEventListener('click', (e) => {
       const b = e.target.closest('button[data-group]');
@@ -57,20 +55,18 @@ export class Timeline {
       const k = b.dataset.group;
       this.hidden.has(k) ? this.hidden.delete(k) : this.hidden.add(k);
       this.syncHeader();
-      this.draw(true);
+      this.draw();
     });
     this.canvas.addEventListener('pointermove', (e) => {
       const r = this.canvas.getBoundingClientRect();
-      this.mouse = { x: e.clientX - r.left, y: e.clientY - r.top };
-      this.draw(true);
+      this.mouse = { x: e.clientX - r.left, y: e.clientY - r.top }; // picked up by the next frame's draw
     });
     this.canvas.addEventListener('pointerleave', () => {
       this.mouse = null;
-      this.hover = null;
       $('tl-tip').hidden = true;
-      this.draw(true);
+      this.draw();
     });
-    window.addEventListener('resize', () => this.open && this.draw(true));
+    window.addEventListener('resize', () => this.open && this.draw());
     this.refresh();
   }
 
@@ -87,7 +83,7 @@ export class Timeline {
     const live = this.app.live;
     if (live.selected >= 0) this.robot = live.selected;
     else if (this.robot < 0 && live.focusRobots.size) this.robot = [...live.focusRobots][0];
-    this.draw(true);
+    this.draw();
   }
 
   close() {
@@ -115,7 +111,7 @@ export class Timeline {
     };
     this.leaseColor = STATUS.moving.hex;
     this.syncHeader();
-    if (this.open) this.draw(true);
+    if (this.open) this.draw();
   }
 
   syncHeader() {
@@ -135,7 +131,7 @@ export class Timeline {
     this.draw();
   }
 
-  draw(force = false) {
+  draw() {
     if (!this.open) return;
     this.lastDraw = performance.now();
     const sim = this.app.sim;
@@ -195,7 +191,7 @@ export class Timeline {
     const hits = [];
 
     // Grid + time axis.
-    const step = this.win <= 4 ? 1 : this.win <= 8 ? 1 : 2;
+    const step = this.win <= 8 ? 1 : 2;
     const stepT = (step * 1000) / sim.cfg.tickMs;
     g.font = '10.5px "JetBrains Mono", monospace';
     g.textAlign = 'center';
@@ -340,7 +336,6 @@ export class Timeline {
     g.stroke();
     g.setLineDash([]);
 
-    this.hits = hits;
     this.showTip(hov, sim);
   }
 
