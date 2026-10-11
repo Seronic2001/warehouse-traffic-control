@@ -27,7 +27,7 @@ npm test           # headless checks: safety under failures, replay, every mode 
 | `V` | **Floor view** (multi-storey only): cycles between all floors (an exploded stack) and each single floor. The same choice is in the floor bar under the mode tabs. |
 | `M` | **Message timeline** for the selected robot (also the **Timeline** button in the inspector). Each process the robot talks to gets a lane: itself, its region managers, the world, other robots. Each message is an arrow from sender to receiver; lost messages end in a ×. Above the robot's lane are the leases it believes it holds. A lease bar turns hatched once the robot's own clock says it has expired. Hover for details, toggle message kinds, and pick a 4/8/16 s window. |
 | `[` / `]` | **Rewind / forward 5 s.** The scrubber above the dock can drag to any earlier moment of the run. Marks on it show deadlocks, crashes, fencing, manager failures and partitions; click one to jump to 1 s before it. Playing on from an earlier moment replays the same future. Acting there (crash, freeze, cut the network) starts a new branch. |
-| `B` | **Benchmark** (runs on a pool of Web Workers, one per spare CPU core; about 25 s on an 8-core laptop): strategies vs density (collisions, throughput, deadlocks, time to resolve, wait distribution and p95, messages per move); the lease safety margin under a hostile network; recovery times after injected robot crashes, pauses and manager crashes; and congestion control on vs off over 10-minute runs. |
+| `B` | **Benchmark** (runs on a pool of Web Workers, one per spare CPU core; about 4 minutes on an 8-core laptop): strategies vs density (collisions, throughput, deadlocks, time to resolve, wait distribution and p95, messages per move); the lease safety margin under a hostile network; recovery times after injected robot crashes, pauses and manager crashes; and congestion control on vs off. Every run covers 30 minutes of warehouse time. |
 | `C` | **Distributed vs centralised**, the second tab of the Benchmark window (about 30 s on 8 cores, 56 runs). Races this design against a single central server that owns every cell, finds deadlocks by searching its whole wait-for graph, and knows every region's load exactly. Robots, leases, fencing, network and routing are identical. A scorecard marks each category *distributed better*, *close* or *centralised better*, computed from the runs. |
 | `Space` / `R` / `Esc` | Pause or resume / restart from the seed / close or exit |
 | `D` | Toggle light / dark theme (also the sun/moon button; the choice is remembered) |
@@ -89,14 +89,16 @@ A crashed manager loses its whole reservation table. On restart it increments an
 * Managers never grant a cell their floor sensor reports occupied by another robot.
 * Stress test: 144 runs (about 416,000 moves) with up to 40% message loss, ±20% clock drift, short leases, every safety margin, and injected failures. The result was **0 collisions**.
 
-### Findings so far (seed 42, 2 minutes of simulated time)
+### Findings so far (seed 42, 30 minutes of simulated time per run)
 
-* Protected collisions stay at **0** in every protocol run. Baseline has 18 collisions per 1,000 moves at 50 robots, rising to 80 at 200.
-* Detection peaks at about 125 tasks/min around 150 robots. In 2-minute runs at 200 robots the floor saturates and throughput falls to about 60–80, still with almost no deadlocks (0.07 per 1,000 moves).
-* Congestion control, total tasks over 14 simulated minutes, mean of 4 seeds: 120 robots 1290 → 1474 (+14%), 150 robots 890 → 1447 (+63%), 200 robots 769 → 995 (+29%). Without it, 150 robots sag from about 120 to about 30 tasks/min over the run; with it they hold 90–120. At 200 robots every region is busy, so there is little room to route around, and the floor is simply over capacity. More dedicated parking or wider highways would be the next step there.
-* Safety margin under a hostile network (20% loss, delay up to 300 ms, ±20% drift, 2 s leases) has a clear sweet spot. With no margin, robots lose about 22 leases per 1,000 moves. Around 0.6–0.8 s, losses drop to about 14 and throughput peaks. At 1.6 s, the margin eats most of the lease and robots can almost never move.
-* Recovery: a crashed robot's lease is taken back after about 2.7 s and its Blocked cell is cleared after about 7.3 s. A paused robot resyncs 0.3 s after waking. A crashed manager is granting again after about 4.3 s when every robot answers (4 s down plus reconciliation), and after 5.5 s when it has to wait out the reconciliation timeout, as it does in this benchmark whenever a crashed robot is still on the floor.
-* Ordered acquisition, as implemented here (queue for the next cell, then grab the rest of the segment all-or-nothing with backoff), works at low density but collapses at 200 robots from repeated backoff. That is worth discussing in the report rather than hiding.
+"Throughput" below is tasks per minute in the final minute of the run, as the benchmark charts show it; "whole run" is total tasks divided by 30.
+
+* Protected collisions stay at **0** in every protocol run. Baseline has 18 collisions per 1,000 moves at 50 robots, rising to 75 at 200.
+* Detection holds about 110 tasks/min from 100 to 150 robots (whole run: 101–105). At 200 robots the floor saturates: the whole-run average falls to 73 tasks/min, though the final minute is back at 104, still with almost no deadlocks (0.30 per 1,000 moves, resolved in about 0.5 s).
+* Congestion control, total tasks over 30 minutes: 100 robots 2954 → 3029 (+3%), 150 robots 1592 → 3159 (+98%), 200 robots 1470 → 2179 (+48%). Without it, 150 robots end the run at 36 tasks/min; with it they hold about 108. At 200 robots every region is busy, so there is little room to route around, and the floor is simply over capacity. More dedicated parking or wider highways would be the next step there.
+* Safety margin under a hostile network (20% loss, delay up to 300 ms, ±20% drift, 2 s leases): over 30 minutes this network wears the floor down at **every** margin. Whole-run throughput is 1–2 tasks/min with up to 0.4 s of margin, 5–7 at 0.6–0.8 s and best at 1.2 s, with only 11 tasks/min. Leases lost by working robots fall from about 136–153 per 1,000 moves at 0–0.2 s to 46 at 1.2 s. At 1.6 s the margin eats most of the lease and robots can almost never move. Short runs hide this collapse: in 2-minute runs the sweet spot was at 0.6–0.8 s.
+* Recovery (120 robots; 120 robot crashes, about 118 pauses and 40 manager crashes per run): a crashed robot's lease is taken back after about 2.7 s and its Blocked cell is cleared after about 7.4 s. A paused robot resyncs 0.3 s after waking. A crashed manager is granting again after about 4.3 s when every robot answers (4 s down plus reconciliation), and after 5.5 s when it has to wait out the reconciliation timeout, as it does in this benchmark whenever a crashed robot is still on the floor.
+* Ordered acquisition, as implemented here (queue for the next cell, then grab the rest of the segment all-or-nothing with backoff), only works at low density. It matches detection at 50 robots (about 60 tasks/min), falls to 55 at 100, and collapses at 150 (10 tasks/min over the whole run, 10 deadlocks per 1,000 moves and 147 messages per move) and at 200 (4 tasks/min) from repeated backoff. That is worth discussing in the report rather than hiding.
 
 ### Distributed vs centralised (`C`)
 
@@ -104,20 +106,20 @@ The centralised baseline is `mode: 'central'`: one manager (M0) owns all cells, 
 
 The **Centralised** mode tab runs it live. The 16 region-manager nodes are replaced by one server tower over the middle of the floor. Every request, grant and renewal flies to that tower. Crashing it from any cell's inspector turns the whole floor red until it has reconciled.
 
-Results (seeds 1–3, default settings):
+Results (seeds 1–3, default settings, 30 minutes per run):
 
 | Category | Distributed | Centralised | Verdict |
 |---|---|---|---|
 | Collisions | 0 | 0 | close |
-| Throughput, mean of 50–200 robots (unlimited server) | 96 | 96 | close |
-| p95 lease wait, 150 robots | 2.67 s | 2.83 s | close |
-| Deadlock resolution | 0.72 s | 0.84 s | close |
-| Messages per move, 150 robots | 8.8 | 7.6 | close (central is ahead, and further ahead at 200 robots: no probes or gossip) |
-| Busiest coordinator node, 200 robots | 114 msgs/s | 950 msgs/s | distributed |
-| Throughput at 200 robots when each node handles 600 msgs/s | 106 | 0 | distributed |
+| Throughput, mean of 50–200 robots (unlimited server) | 87 | 87 | close |
+| p95 lease wait, 150 robots | 3.25 s | 3.17 s | close |
+| Deadlock resolution | 0.65 s | 0.73 s | close |
+| Messages per move, 150 robots | 9.6 | 7.8 | centralised (no probes or gossip; further ahead at 200 robots, 24.0 vs 14.2) |
+| Busiest coordinator node, 200 robots | 125 msgs/s | 950 msgs/s | distributed |
+| Throughput at 200 robots when each node handles 600 msgs/s | 86 | 0 | distributed |
 | Per-node capacity needed for 90% throughput, 200 robots | 200 msgs/s | 800 msgs/s | distributed |
-| Robots cut off per coordinator crash (120 robots) | 14 | 120 | distributed |
-| Tasks lost to a coordinator crash every 45 s | 3% | 10% | distributed |
+| Robots cut off per coordinator crash (120 robots) | 11 | 120 | distributed |
+| Tasks lost to a coordinator crash every 45 s | 4% | 10% | distributed |
 | Recovery after a coordinator crash | 4.3 s | 4.3 s | close |
 
 In short, a fast enough central server matches the distributed design in normal operation and sends fewer messages. The distributed design wins on per-node load, on running with modest hardware, and on how much of the floor a crash takes down. Below about 800 msgs/s the central server suffers congestion collapse: renewals queue behind requests, leases run out, robots resync, and that adds even more traffic.
@@ -147,4 +149,4 @@ Click the **Multi-storey** tab in the top bar (leases + detection on 3 floors), 
   * A lift manager crashing during a ride reconciles in 5.5 s.
   * A robot that freezes inside the car past its lease is fenced on its stale epoch, resyncs and gets the car back.
 
-**Findings (90 robots, 3 minutes, mean of 2 seeds).** Lifts are the bottleneck. With 3 floors, throughput goes from 9 tasks/min with 1 lift to 26 with 2, 44 with 4, 53 with 6 and 64 with 8. The mean wait for a car falls from 8.3 s to 4.3 s. One floor manages 84 tasks/min, two floors with 4 lifts 70. A ride holds a car for about 3.5 s: drive in, ride, wait for the exit cell, drive out. Empty trips to the next waiter add more. So a lift moves about one robot every 4–5 s. The **Benchmark** (`B`) has these sweeps in section E.
+**Findings (90 robots, 30 minutes, mean of 2 seeds).** Lifts are the bottleneck. With 3 floors, throughput goes from 8 tasks/min with 1 lift to 30 with 2, 54 with 4, 51 with 6 and 73 with 8. Six lifts are no better than four over a long run. With one lift, seed 2 almost stalls: 67 rides in 30 minutes, against 513 for seed 1. The mean wait for a car falls from 8.8 s to 4.2 s. One floor manages 96 tasks/min, two floors with 4 lifts 79. No run has a collision. A ride holds a car for about 3.5 s: drive in, ride, wait for the exit cell, drive out. Empty trips to the next waiter add more. So a lift moves about one robot every 4–5 s. The **Benchmark** (`B`) has these sweeps in section E.

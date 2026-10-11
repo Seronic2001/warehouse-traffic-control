@@ -17,13 +17,13 @@ const MODES = ['detect', 'central'];
 const TICK_S = DEFAULTS.tickMs / 1000;
 const SEEDS = [1, 2, 3];
 const DENSITIES = [50, 100, 150, 200];
-const S_TICKS = 2400; // 2 minutes
+const S_TICKS = 36000; // 30 minutes
 const RATES = [10, 20, 30, 40, 50, 60]; // messages per tick per node
 const K_ROBOTS = 200;
 const K_SEEDS = [1, 2];
 const EQUAL_RATE = 30; // the "equal hardware" row of the scorecard
 const F_ROBOTS = 120;
-const F_TICKS = 3600; // 3 minutes: 4 coordinator crashes
+const F_TICKS = 36000; // 30 minutes: 40 coordinator crashes
 const F_SEEDS = [1, 2];
 const perSec = (rate) => rate / TICK_S;
 
@@ -37,7 +37,7 @@ export class Compare {
     this.results = new Map();
     $('cmp-run').addEventListener('click', () => this.run());
     const cores = poolSize();
-    $('cmp-dur').textContent = cores > 5 ? `about 30 seconds on ${cores} CPU cores` : cores > 1 ? `about a minute on ${cores} CPU cores` : 'a few minutes';
+    $('cmp-dur').textContent = cores > 5 ? `about 7 minutes on ${cores} CPU cores` : cores > 1 ? `about 15 minutes on ${cores} CPU cores` : 'half an hour or more';
     this.refresh();
   }
 

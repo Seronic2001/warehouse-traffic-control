@@ -14,17 +14,18 @@ const PROTOCOLS = ['detect', 'ordered'];
 const DENSITIES = [50, 100, 150, 200];
 const TICK_S = DEFAULTS.tickMs / 1000;
 
-const SWEEP_A_TICKS = 2400; // 2 minutes
+const BENCH_TICKS = 36000; // 30 minutes of warehouse time, every run
+const SWEEP_A_TICKS = BENCH_TICKS;
 const MARGINS = [0, 4, 8, 12, 16, 24, 32]; // ticks
 const HOSTILE = { mode: 'detect', robots: 120, loss: 0.2, delayMin: 1, delayMax: 6, clockDrift: 0.2, leaseTicks: 40, renewEvery: 10 };
 const MARGIN_SEEDS = [1, 2];
-const FAIL_TICKS = 3600; // 3 minutes, a failure every 15 s
-const CONG_TICKS = 12000; // 10 minutes: congestion builds up slowly
+const FAIL_TICKS = BENCH_TICKS; // a failure every 15 s
+const CONG_TICKS = BENCH_TICKS; // congestion builds up slowly
 const CONG_DENSITIES = [100, 150, 200]; // workers; one core is always left for the page
 const LIFT_COUNTS = [1, 2, 4, 6, 8];
 const FLOOR_COUNTS = [1, 2, 3];
 const STOREY = { mode: 'detect', robots: 90 }; // per run; spread over all floors
-const STOREY_TICKS = 3600; // 3 minutes
+const STOREY_TICKS = BENCH_TICKS;
 const STOREY_SEEDS = [1, 2];
 
 const DENSITY_METRICS = [
@@ -60,7 +61,7 @@ export class Bench {
       $('bench-grid').hidden = !t.hidden;
     });
     const cores = poolSize();
-    $('bench-dur').textContent = cores > 5 ? `about 25 seconds on ${cores} CPU cores` : cores > 1 ? `under a minute on ${cores} CPU cores` : 'about two minutes';
+    $('bench-dur').textContent = cores > 5 ? `about 4 minutes on ${cores} CPU cores` : cores > 1 ? `about 10 minutes on ${cores} CPU cores` : 'about 20 minutes';
     this.refresh();
   }
 
@@ -152,7 +153,7 @@ export class Bench {
   draw() {
     const grid = $('bench-grid');
     if (!this.results.size) {
-      grid.innerHTML = `<div class="bench-empty">Run the sweeps to compare strategies across 50 to 200 robots, measure the effect of the lease safety margin, time recovery after crashes, pauses and manager failures, and test congestion control over 10-minute runs.</div>`;
+      grid.innerHTML = `<div class="bench-empty">Run the sweeps to compare strategies across 50 to 200 robots, measure the effect of the lease safety margin, time recovery after crashes, pauses and manager failures, and test congestion control, each run covering 30 minutes of warehouse time.</div>`;
       $('bench-table').innerHTML = '';
       return;
     }
@@ -222,7 +223,7 @@ export class Bench {
     );
     const d = (k, n, key) => this.results.get(`D:${k}:${n}`)?.[key] ?? null;
     const perMin = (k, n) => (d(k, n, 'tasks') == null ? null : d(k, n, 'tasks') / ((CONG_TICKS * TICK_S) / 60));
-    grid.appendChild(lineChart({ title: 'Average throughput, whole run', note: 'Tasks completed per minute over all 10 minutes', xs: CONG_DENSITIES, xFmt: (n) => `${n}`, xName: 'robots', fmt: (v) => v.toFixed(0), series: [{ ...on, values: CONG_DENSITIES.map((n) => perMin('on', n)) }, { ...off, values: CONG_DENSITIES.map((n) => perMin('off', n)) }] }));
+    grid.appendChild(lineChart({ title: 'Average throughput, whole run', note: 'Tasks completed per minute over the whole run', xs: CONG_DENSITIES, xFmt: (n) => `${n}`, xName: 'robots', fmt: (v) => v.toFixed(0), series: [{ ...on, values: CONG_DENSITIES.map((n) => perMin('on', n)) }, { ...off, values: CONG_DENSITIES.map((n) => perMin('off', n)) }] }));
     grid.appendChild(lineChart({ title: 'Throughput in the final minute', note: 'Without control, queues build up and throughput sags late in the run', xs: CONG_DENSITIES, xFmt: (n) => `${n}`, xName: 'robots', fmt: (v) => v.toFixed(0), series: [{ ...on, values: CONG_DENSITIES.map((n) => d('on', n, 'throughput')) }, { ...off, values: CONG_DENSITIES.map((n) => d('off', n, 'throughput')) }] }));
 
     // ── E ──
