@@ -40,6 +40,9 @@ function refreshPalette() {
 refreshPalette();
 
 const MAX_TILES = 1200;
+const MAX_PATH_DOTS = 600;
+const NODE_FADE = [7, 10]; // camera distance where manager nodes vanish / are fully shown
+const PATH_DOT_GAP = 0.3; // world units between path dots
 const MAX_ARCS = 900;
 const MAX_PROBES = 400;
 const MAX_MSGS = 900;
@@ -209,8 +212,10 @@ export class LiveView {
         new THREE.PlaneGeometry(12 - 0.3, 8 - 0.3).rotateX(-Math.PI / 2),
         new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false }),
       );
-      mesh.position.set(wx(i * 12 + 5.5), levelOf((id / RF) | 0) + 0.025, wz(j * 8 + 3.5));
-      mesh.renderOrder = 1;
+      // Under the lease tiles (+0.012) and drawn before them: load is
+      // background context, the leases are what the eye should land on.
+      mesh.position.set(wx(i * 12 + 5.5), levelOf((id / RF) | 0) + 0.006, wz(j * 8 + 3.5));
+      mesh.renderOrder = 0;
       mesh.visible = false;
       const edge = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.PlaneGeometry(12 - 0.3, 8 - 0.3).rotateX(-Math.PI / 2)), new THREE.LineBasicMaterial({ transparent: true }));
       edge.position.y = 0.01;
@@ -231,9 +236,9 @@ export class LiveView {
       const u = mgr.loadIn(i);
       const full = u >= sim.cfg.admitBelow;
       mesh.material.color.set(hex);
-      mesh.material.opacity = Math.min(0.6, Math.max(0, (u - 0.05) / 0.35) * 0.6);
+      mesh.material.opacity = Math.min(1, Math.max(0, (u - 0.05) / 0.35)) * theme.load.fill;
       mesh.children[0].material.color.set(hex);
-      mesh.children[0].material.opacity = full ? 0.9 : 0;
+      mesh.children[0].material.opacity = full ? theme.load.edge : 0;
     });
   }
 
@@ -408,12 +413,14 @@ export class LiveView {
     this.cellCursor.visible = false;
     this.group.add(this.cellCursor);
 
+    // Drawn over everything, so the route stays visible down rack aisles.
     this.pathDots = new THREE.InstancedMesh(
-      new THREE.CircleGeometry(0.07, 16).rotateX(-Math.PI / 2),
-      new THREE.MeshBasicMaterial({ color: C('#0891b2'), transparent: true, depthWrite: false }),
-      160,
+      new THREE.CircleGeometry(0.09, 16).rotateX(-Math.PI / 2),
+      new THREE.MeshBasicMaterial({ color: C('#0891b2'), transparent: true, opacity: 0.9, depthWrite: false, depthTest: false }),
+      MAX_PATH_DOTS,
     );
     this.pathDots.count = 0;
+    this.pathDots.renderOrder = 4;
     this.pathDots.frustumCulled = false;
     this.group.add(this.pathDots);
   }
@@ -711,16 +718,27 @@ export class LiveView {
     });
     this.blockedCells = blocked;
 
-    // selected robot's planned path
+    // selected robot's planned path, as a dotted line from the robot onwards
     let d = 0;
     if (this.selected >= 0) {
       const r = sim.robots[this.selected];
       if (r && !r.removed) {
+        let [px, pz] = this.robotPos(r.id);
+        let pc = r.cell;
+        let carry = PATH_DOT_GAP / 2;
         for (const c of r.path) {
-          if (d >= 160) break;
-          if (!this.showsCell(c)) continue;
-          m.makeTranslation(wx(xOf(c)), this.cellY(c) + 0.02, wz(yOf(c)));
-          this.pathDots.setMatrixAt(d++, m);
+          const cx = xOf(c), cz = yOf(c);
+          // Skip lift rides (no floor between storeys) and hidden storeys.
+          if (floorOf(c) === floorOf(pc) && this.showsCell(c) && this.showsCell(pc)) {
+            const len = Math.hypot(cx - px, cz - pz);
+            for (; carry < len && d < MAX_PATH_DOTS; carry += PATH_DOT_GAP) {
+              const k = carry / len;
+              m.makeTranslation(wx(px + (cx - px) * k), this.cellY(c) + 0.03, wz(pz + (cz - pz) * k));
+              this.pathDots.setMatrixAt(d++, m);
+            }
+            carry -= len;
+          } else carry = PATH_DOT_GAP / 2;
+          (px = cx), (pz = cz), (pc = c);
         }
       }
     }
@@ -900,7 +918,11 @@ export class LiveView {
     const sel = this.selected >= 0 ? sim.robots[this.selected] : null;
     const selRegion = sel ? sim.mgrOf(sel.cell) : -1;
     for (const node of this.managers) {
-      node.group.visible = vis && this.spot?.managers !== 'dim' && (node.f === undefined || this.showsFloor(node.f));
+      // Nodes hover between a close-up camera and the floor: fade out the
+      // ones right in front of the lens instead of letting them fill the view.
+      const near = this.camera ? Math.min(1, Math.max(0, (this.camera.position.distanceTo(node.group.position) - NODE_FADE[0]) / (NODE_FADE[1] - NODE_FADE[0]))) : 1;
+      node.fade = near;
+      node.group.visible = vis && near > 0 && this.spot?.managers !== 'dim' && (node.f === undefined || this.showsFloor(node.f));
       if (!node.group.visible) continue;
       const mgr = sim.managers[node.id];
       const act = Math.min(1, mgr.activity / 6);
@@ -922,6 +944,7 @@ export class LiveView {
         node.beamMat.opacity = 0.35;
         node.beamMat.color.set(hex);
         node.group.position.y = node.baseY + (down ? -0.25 : 0);
+        fadeNode(node);
         for (const alert of alerts) {
           alert.visible = true;
           alert.material.color.set(hex);
@@ -951,6 +974,7 @@ export class LiveView {
       node.ring.scale.setScalar((1 + act * 0.25) * pulse);
       node.core.rotation.y = now * 0.0004 + node.id;
       node.group.position.y = node.baseY + Math.sin(now * 0.0012 + node.id) * 0.06;
+      fadeNode(node);
     }
   }
 
@@ -1168,7 +1192,12 @@ export class LiveView {
       } else [x, y, z] = a.pos;
       const html = typeof a.html === 'function' ? a.html(sim) : a.html;
       if (!html) continue;
-      this.label('a' + a.key, `anno${a.cls ? ' ' + a.cls : ''}`, `<div class="in" style="--h:${a.h ?? 46}px"><div class="card">${html}</div><i class="stem"></i><b class="dot"></b></div>`, x, y, z);
+      // Only the card's contents change between frames; rebuilding the shell
+      // would replay its entrance animation and make live counts flicker.
+      const key = 'a' + a.key;
+      this.label(key, `anno${a.cls ? ' ' + a.cls : ''}`, `<div class="in" style="--h:${a.h ?? 46}px"><div class="card"></div><i class="stem"></i><b class="dot"></b></div>`, x, y, z);
+      const l = this.labels.get(key);
+      if (l.card !== html || !l.el.querySelector('.card').innerHTML) (l.el.querySelector('.card').innerHTML = html), (l.card = html);
     }
     for (const [key, l] of this.labels) {
       if (!l.used) {
@@ -1190,6 +1219,13 @@ export function robotStatusKey(r, sim, cycles) {
 }
 
 // ───────────────────────────── helpers ─────────────────────────────
+
+function fadeNode(node) {
+  if (node.fade >= 1) return;
+  node.coreMat.opacity *= node.fade;
+  node.ringMat.opacity *= node.fade;
+  node.beamMat.opacity *= node.fade;
+}
 
 function lerpAngle(a, b, k) {
   let d = b - a;

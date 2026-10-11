@@ -87,6 +87,7 @@ composer.addPass(new OutputPass());
 const warehouse = buildWarehouse(scene, layout, renderer);
 const resolution = new THREE.Vector2(window.innerWidth, window.innerHeight);
 const live = new LiveView(scene, warehouse, resolution);
+live.camera = camera;
 
 // ───────────────────────────── app state ─────────────────────────────
 
@@ -359,20 +360,22 @@ window.addEventListener('keydown', (e) => {
   else if (e.key === '4') app.startScenario('manager');
   else if (e.key === '5') app.startScenario('partition');
   else if (e.key === '6') app.startScenario('lift');
-  else if (e.key === 'b' || e.key === 'B') bench.open();
-  else if (e.key === 'c' || e.key === 'C') compare.open();
+  else if (e.key === 'b' || e.key === 'B') bench.open('sweep');
+  else if (e.key === 'c' || e.key === 'C') bench.open('compare');
   else if (e.key === 't' || e.key === 'T') tour.active ? tour.end() : tour.start();
   else if (e.key === 'd' || e.key === 'D') app.toggleTheme();
   else if (tour.active && e.key === 'ArrowRight') tour.next();
+  else if (e.key === 'ArrowRight' && !document.getElementById('nar-foot').hidden) app.setRunning(true);
+  else if ((e.key === 'a' || e.key === 'A') && app.scenario && !tour.active) hud.setAuto(!hud.autoPlay);
   else if (tour.active && e.key === 'ArrowLeft') tour.back();
   else if (e.key === 'r' || e.key === 'R') app.restart();
   else if (e.key === 'f' || e.key === 'F') {
     if (live.selected >= 0) app.follow = !app.follow;
     hud.onSelect();
   } else if (e.key === 'Escape') {
-    if (tour.active) tour.end();
+    if (app.clean) setClean(false);
+    else if (tour.active) tour.end();
     else if (bench.isOpen) bench.close();
-    else if (compare.isOpen) compare.close();
     else if (timeline.open) timeline.close();
     else if (live.selected >= 0 || live.selectedCell >= 0) app.select(-1);
     else if (app.scenario) app.exitScenario();
@@ -417,7 +420,9 @@ function frame(now) {
   const sim = app.sim;
   const tickMs = sim.cfg.tickMs;
   if (app.running && !app.scrubbing) {
-    acc += dt * 1000 * app.speed;
+    // A scenario step can play in slow motion so its beat lines up with the text.
+    const slow = (app.scenario && SCENARIOS[app.scenario].steps[app.ctx.step]?.slow) || 1;
+    acc += dt * 1000 * app.speed * slow;
     let n = 0;
     while (acc >= tickMs && n < 16) {
       app.history.step(sim);
@@ -456,6 +461,19 @@ function frame(now) {
 flyTo(new THREE.Vector3(0, 0, 1.5), fitDistance(), 0.74, -0.12, 2600);
 requestAnimationFrame(frame);
 document.getElementById('btn-home').addEventListener('click', () => flyHome());
+
+// Full screen: hide every panel and show only the 3D scene. Esc leaves it
+// (the browser exits its own full screen on Esc and fires fullscreenchange).
+app.clean = false;
+function setClean(on) {
+  if (app.clean === on) return;
+  app.clean = on;
+  document.body.classList.toggle('clean', on);
+  if (on) document.documentElement.requestFullscreen?.().catch(() => {});
+  else if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+}
+document.getElementById('btn-full').addEventListener('click', () => setClean(true));
+document.addEventListener('fullscreenchange', () => !document.fullscreenElement && setClean(false));
 
 // ───────────────────────────── light / dark ─────────────────────────────
 

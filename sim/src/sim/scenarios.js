@@ -180,7 +180,9 @@ export const SCENARIOS = {
       },
       {
         text: 'R0 finished its pick, but its renewals never got through. By <b>its own clock</b> the lease is about to run out, so it <b>refuses to move</b>, even though no one has told it the cell is gone. Watch the cell ahead of it.',
-        dwell: 50, // ticks: the re-grant follows half a second later
+        // The manager re-grants the cell only half a second later: play
+        // that stretch slowly so the text can be read before R1 drives in.
+        slow: 0.2,
         done: (sim, ctx) => since(sim, ctx, 'regrant'),
       },
       {

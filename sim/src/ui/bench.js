@@ -49,7 +49,8 @@ export class Bench {
     this.results = new Map();
     this.isOpen = false;
     $('btn-bench').addEventListener('click', () => this.open());
-    $('bench-close').addEventListener('click', () => this.close());
+    for (const b of document.querySelectorAll('#bench .bench-close')) b.addEventListener('click', () => this.close());
+    for (const b of $('bench-tabs').children) b.addEventListener('click', () => this.tab(b.dataset.tab));
     $('bench').addEventListener('click', (e) => e.target.id === 'bench' && this.close());
     $('bench-run').addEventListener('click', () => this.run());
     $('bench-table-btn').addEventListener('click', () => {
@@ -68,9 +69,20 @@ export class Bench {
     this.draw();
   }
 
-  open() {
+  // `tab` picks a pane: 'sweep' (strategies) or 'compare' (vs centralised).
+  open(tab) {
+    if (tab) this.tab(tab);
     $('bench').hidden = false;
     this.isOpen = true;
+  }
+
+  tab(name) {
+    for (const b of $('bench-tabs').children) {
+      const on = b.dataset.tab === name;
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-selected', on);
+      $('bench-pane-' + b.dataset.tab).hidden = !on;
+    }
   }
 
   close() {

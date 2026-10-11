@@ -248,6 +248,9 @@ input { font: inherit; color: inherit; }
 .nar-dots i.done { background: rgba(8, 145, 178, 0.5); }
 .nar-dots i.on { background: var(--cyan); box-shadow: 0 0 8px rgba(8, 145, 178, 0.8); }
 .nar-head .ghost { padding: 4px 10px; font-size: 12px; }
+.nar-head .nar-auto.on { background: rgba(8, 145, 178, 0.14); border-color: rgba(8, 145, 178, 0.55); color: var(--cyan); }
+.nar-foot { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 10px; font-size: 12.5px; color: var(--text-2); }
+.nar-foot .primary { padding: 6px 14px; font-size: 13px; }
 #nar-text { margin: 8px 0 0; font-size: 14px; line-height: 1.55; color: var(--text-2); min-height: 44px; }
 #nar-text b { color: var(--text); font-weight: 600; }
 #nar-text.fade { animation: fadein 0.45s ease-out; }
@@ -545,6 +548,10 @@ body.has-timeline .hint { display: none; }
   padding: 20px 22px 22px;
   box-shadow: 0 30px 80px rgba(var(--shade), calc(0.18 * var(--shade-k)));
 }
+/* Strategies / vs Centralised switch, same look as the timeline window picker */
+.bench-tabs { display: inline-flex; background: rgba(var(--ink), 0.04); border-radius: 9px; padding: 3px; margin-bottom: 14px; }
+.bench-tabs button { border: 0; background: transparent; color: var(--text-2); border-radius: 7px; padding: 5px 12px; font-size: 12.5px; font-weight: 600; }
+.bench-tabs button.on { background: var(--panel-solid); color: var(--text); box-shadow: 0 1px 2px rgba(var(--shade), calc(0.12 * var(--shade-k))); }
 .modal-head { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; }
 .modal-head h2 { margin: 0; font-size: 18px; }
 .modal-head p { margin: 4px 0 0; color: var(--text-2); font-size: 13px; max-width: 560px; }
@@ -872,3 +879,14 @@ body.touring.tour-dash .tour { bottom: 96px; }
 @media (max-width: 1300px) {
   .brand h1 { display: none; }
 }
+
+/* Full screen (btn-full): only the 3D scene and its in-scene labels. */
+body.clean .topbar,
+body.clean .floorbar,
+body.clean .narration,
+body.clean .panel,
+body.clean .right-col,
+body.clean .dock,
+body.clean .scrub,
+body.clean .hint,
+body.clean .tour { display: none !important; }

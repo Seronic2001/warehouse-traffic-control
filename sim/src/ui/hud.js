@@ -160,6 +160,15 @@ export class Hud {
     );
     $('nar-exit').addEventListener('click', () => this.app.exitScenario());
     $('nar-replay').addEventListener('click', () => this.app.startScenario(this.app.scenario));
+    $('nar-next').addEventListener('click', () => this.app.setRunning(true));
+    // Scenarios pause at each new step unless Auto is on (remembered per browser).
+    try {
+      this.autoPlay = localStorage.getItem('scenarioAuto') === '1';
+    } catch {
+      this.autoPlay = false;
+    }
+    $('nar-auto').addEventListener('click', () => this.setAuto(!this.autoPlay));
+    this.setAuto(this.autoPlay);
     $('feed-list').addEventListener('click', (e) => {
       const li = e.target.closest('li[data-cell]');
       if (!li) return;
@@ -238,6 +247,8 @@ export class Hud {
 
   syncTransport() {
     $('btn-play').classList.toggle('paused', !this.app.running);
+    // Scenarios stop at each new step (unless Auto); Continue resumes.
+    $('nar-foot').hidden = !(this.sc && !this.autoPlay && !this.app.running);
     document.querySelectorAll('.speeds button').forEach((b) => b.classList.toggle('on', +b.dataset.speed === this.app.speed));
   }
 
@@ -440,14 +451,29 @@ export class Hud {
   // ───────────────────────────── scenarios ─────────────────────────────
 
   showNarration(sc) {
+    this.sc = sc;
     $('narration').hidden = false;
     $('nar-title').textContent = sc.title;
     $('nar-dots').innerHTML = sc.steps.map(() => '<i></i>').join('');
     this.setStep(sc, 0);
   }
 
+  setAuto(on) {
+    this.autoPlay = on;
+    try {
+      localStorage.setItem('scenarioAuto', on ? '1' : '0');
+    } catch {}
+    $('nar-auto').classList.toggle('on', on);
+    $('nar-auto').setAttribute('aria-pressed', on);
+    // Switching Auto on while stopped at a step carries on straight away.
+    if (on && this.sc && !this.app.running) this.app.setRunning(true);
+    else this.syncTransport();
+  }
+
   hideNarration() {
+    this.sc = null;
     $('narration').hidden = true;
+    $('nar-foot').hidden = true;
     document.querySelectorAll('.scn[data-scenario]').forEach((b) => b.classList.remove('on'));
   }
 
@@ -476,7 +502,10 @@ export class Hud {
       this.app.history.stepAt[ctx.step] = sim.tick;
       moved = true;
     }
-    if (moved) this.setStep(sc, ctx.step);
+    if (!moved) return;
+    this.setStep(sc, ctx.step);
+    // Only with the narration on screen: the tour runs scenarios silently.
+    if (!this.autoPlay && this.sc === sc) this.app.setRunning(false);
   }
 }
 

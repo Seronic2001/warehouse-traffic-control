@@ -47,6 +47,7 @@ const LIGHT = {
   burst: { collision: '#e11d48', fenced: '#be123c', cleared: '#16a34a', yield: '#7c3aed', other: '#334155', deadlock: '#e11d48', k: 1 },
   cordon: ['#d97706', 1], marker: ['#0f172a', 1], pathDot: ['#0891b2', 1], beacon: '#0891b2',
   regions: { tints: ['#0ea5e9', '#8b5cf6'], k: 1, edgeK: 1, opacity: 0.16, softOpacity: 0.05 },
+  load: { fill: 0.2, edge: 0.8 }, // region load tint: peak opacity, outline when full
   status: {
     moving: '#0891b2', work: '#16a34a', wait: '#f59e0b', deadlock: '#e11d48', yield: '#7c3aed', paused: '#3b82f6', crashed: '#64748b',
   },
@@ -103,6 +104,7 @@ const DARK = {
   burst: { collision: '#f87171', fenced: '#fb7185', cleared: '#4ade80', yield: '#a78bfa', other: '#cbd5e1', deadlock: '#f87171', k: 1 },
   cordon: ['#fbbf24', 1], marker: ['#f1f5f9', 1], pathDot: ['#38bdf8', 1], beacon: '#38bdf8',
   regions: { tints: ['#38bdf8', '#a78bfa'], k: 1, edgeK: 1, opacity: 0.12, softOpacity: 0.05 },
+  load: { fill: 0.16, edge: 0.7 },
   status: {
     moving: '#38bdf8', work: '#4ade80', wait: '#fbbf24', deadlock: '#f87171', yield: '#a78bfa', paused: '#93c5fd', crashed: '#6b7280',
   },

@@ -35,10 +35,6 @@ export class Compare {
   constructor(app) {
     this.app = app;
     this.results = new Map();
-    this.isOpen = false;
-    $('btn-compare').addEventListener('click', () => this.open());
-    $('cmp-close').addEventListener('click', () => this.close());
-    $('compare').addEventListener('click', (e) => e.target.id === 'compare' && this.close());
     $('cmp-run').addEventListener('click', () => this.run());
     const cores = poolSize();
     $('cmp-dur').textContent = cores > 5 ? `about 30 seconds on ${cores} CPU cores` : cores > 1 ? `about a minute on ${cores} CPU cores` : 'a few minutes';
@@ -50,15 +46,6 @@ export class Compare {
     this.draw();
   }
 
-  open() {
-    $('compare').hidden = false;
-    this.isOpen = true;
-  }
-
-  close() {
-    $('compare').hidden = true;
-    this.isOpen = false;
-  }
 
   jobs() {
     const base = { ...this.app.cfg };
