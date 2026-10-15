@@ -7,6 +7,7 @@ import { theme } from '../render/theme.js';
 import { robotStatusKey } from '../render/live.js';
 import { cellOf, xOf, yOf, fmtCell, regionOf } from '../sim/layout.js';
 import { fmtEpoch } from '../sim/manager.js';
+import { makeDraggable } from './draggable.js';
 
 const $ = (id) => document.getElementById(id);
 const sw = (hex, label, shape = 'dot') => `<span class="swi"><span class="swc swc-${shape}" style="--c:${hex}"></span>${label}</span>`;
@@ -23,6 +24,7 @@ export class Tour {
     $('tour-skip').addEventListener('click', () => this.end());
     $('btn-tour').addEventListener('click', () => (this.active ? this.end() : this.start()));
     $('tour-dots').innerHTML = this.steps.map(() => '<i></i>').join('');
+    makeDraggable($('tour'), [document.querySelector('.tour-top'), $('tour-title')]);
   }
 
   // Theme changed: rebuild step text so inline colour keys match.

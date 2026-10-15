@@ -7,6 +7,7 @@ import { Network } from './network.js';
 import { RegionManager, fmtEpoch } from './manager.js';
 import { LiftManager } from './lift.js';
 import { Robot } from './robot.js';
+import { Reservations } from './whca.js';
 
 export const DEFAULTS = {
   seed: 42,
@@ -14,6 +15,17 @@ export const DEFAULTS = {
   floors: 1,
   lifts: 4, // lifts joining the floors (ignored with one floor)
   mode: 'detect', // 'baseline' | 'detect' | 'ordered' | 'central'
+  // How lease + detection mode handles deadlocks:
+  //   'cmh'     Chandy–Misra–Haas edge-chasing probes (detection)
+  //   'mm'      Mitchell–Merritt label passing (detection, one detector per cycle)
+  //   'waitdie' Wait-Die by task age (prevention: no cycle can form)
+  //   'timeout' give way after waitTimeout ticks (no detection)
+  //   'whca'    WHCA* space-time reservations to steer routes, plus 'cmh'
+  deadlock: 'cmh',
+  waitTimeout: 40,
+  whcaWindow: 16, // slots a WHCA* plan looks ahead
+  whcaSlot: 8, // ticks per reservation slot (a move plus a turn)
+  whcaLate: 2, // slots behind schedule before a WHCA* robot replans
   tickMs: 50,
   moveTicks: MOVE_TICKS,
   turnTicks: 2,
@@ -82,6 +94,10 @@ export class Simulation {
     this.recentDeadlocks = new Map();
     this.openCycles = new Map(); // key -> { formed, detected }
     this.contacts = new Set();
+    // Ground truth for measurement: wait-for cycles that really exist now.
+    this.trueCycles = new Map(); // key -> tick it formed
+    this.inCycle = new Set(); // robots on one of them
+    this.res = this.cfg.mode === 'detect' && this.cfg.deadlock === 'whca' ? new Reservations(this.cfg.whcaSlot) : null;
     this.taskTicks = [];
     this.maintenance = [];
     this.deadZones = []; // network partitions: { x0, y0, x1, y1, from, until }
@@ -92,6 +108,8 @@ export class Simulation {
       riskyMoves: 0, liveExpiries: 0, sensorHolds: 0,
       mgrMsgs: 0, mgrQueueTicks: 0, mgrPeak: 0,
       rides: 0, liftWaits: 0, liftWaitTicks: 0,
+      detections: 0, dies: 0, replans: 0, stalls: 0,
+      trueCycles: 0, cycleTicks: 0, longestCycle: 0, needlessYields: 0,
     };
     this.waitHist = new Array(WAIT_BINS).fill(0);
     this.recovery = { crashOwnership: [], crashCleared: [], pauseResync: [], mgrReconcile: [] };
@@ -191,6 +209,8 @@ export class Simulation {
     for (const r of this.robots) r.step();
 
     this.detectCollisions();
+    if (this.mode !== 'baseline') this.checkTruth();
+    if (this.res) this.res.prune(Math.floor(t / this.res.slot));
     this.runMaintenance();
     this.trace?.afterStep(this);
 
@@ -523,17 +543,13 @@ export class Simulation {
 
   onDeadlock(cycle, detector, alts = [], rel = []) {
     const t = this.tick;
+    this.metrics.detections++; // every report, duplicates included
     const key = [...cycle].sort((a, b) => a - b).join(',');
     const last = this.recentDeadlocks.get(key);
     if (last !== undefined && t - last < 80) return;
     this.recentDeadlocks.set(key, t);
     if (this.recentDeadlocks.size > 500) this.recentDeadlocks.clear();
-    // Forget cycles nobody yielded for (a lost ABORT, a victim that had just
-    // yielded): they are detected again if they are still there.
-    for (const [k, c] of this.openCycles) if (t - c.detected > 400) this.openCycles.delete(k);
-    this.metrics.deadlocks++;
     const members = cycle.map((id) => this.robots[id]);
-    const formed = Math.max(...members.map((r) => r.waitSince));
     // Lowest priority yields (ties: higher robot ID), but only among robots
     // whose yield actually breaks the cycle. Best: a robot that merely
     // *reserved* the cell the robot behind it wants, since yielding releases
@@ -546,11 +562,8 @@ export class Simulation {
     const pool = releasing.length ? releasing : movable.length ? movable : members;
     let victim = pool[0];
     for (const r of pool) if (lower(r, victim)) victim = r;
-    this.openCycles.set(key, { formed, detected: t });
-    this.cycles.push({ robots: cycle.slice(), tick: t, victim: victim.id, key });
     const by = detector.addr[0] === 'm' ? `Coordinator M${detector.id} found` : `Probe from R${detector.id} returned:`;
-    this.event('deadlock', `${by} cycle ${cycle.map((i) => 'R' + i).join(' → ')} → R${cycle[0]}. R${victim.id} yields (priority ${victim.priority})`, { robots: cycle.slice(), victim: victim.id });
-    this.flag('deadlock');
+    this.noteDeadlock(key, cycle, victim, `${by} cycle ${cycle.map((i) => 'R' + i).join(' → ')} → R${cycle[0]}. R${victim.id} yields (priority ${victim.priority})`);
     // If the victim can't release anything (it stands in the cell the robot
     // behind it wants), it is told to step aside instead of just cancelling.
     const standing = !rel[members.indexOf(victim)];
@@ -558,8 +571,100 @@ export class Simulation {
     else detector.send('r' + victim.id, { type: 'ABORT', key, standing });
   }
 
+  // Bookkeeping shared by every detector: count the deadlock, start the
+  // resolution clock, show the cycle.
+  noteDeadlock(key, cycle, victim, text) {
+    const t = this.tick;
+    // Forget cycles nobody yielded for (a lost ABORT, a victim that had just
+    // yielded): they are detected again if they are still there.
+    for (const [k, c] of this.openCycles) if (t - c.detected > 400) this.openCycles.delete(k);
+    this.metrics.deadlocks++;
+    const formed = Math.max(...cycle.map((id) => this.robots[id].waitSince));
+    this.openCycles.set(key, { formed, detected: t });
+    this.cycles.push({ robots: cycle.slice(), tick: t, victim: victim.id, key });
+    this.event('deadlock', text, { robots: cycle.slice(), victim: victim.id });
+    this.flag('deadlock');
+  }
+
+  // Mitchell–Merritt: `r` saw its own label come back, so it sits on a cycle
+  // and is the only robot that will notice. `best` is the victim the label
+  // picked up on its way round. The algorithm names no other members; for
+  // the view, follow the robots' own wait-for pointers round.
+  onLabelCycle(r, best) {
+    this.metrics.detections++;
+    const cycle = [r.id];
+    for (let j = r.waitingFor; j >= 0 && j !== r.id && cycle.length <= this.robots.length; j = this.robots[j].waitingFor) cycle.push(j);
+    if (this.robots[cycle[cycle.length - 1]].waitingFor !== r.id) cycle.length = 1;
+    const key = [...cycle].sort((a, b) => a - b).join(',');
+    const victim = this.robots[best.id];
+    this.noteDeadlock(key, cycle, victim, `R${r.id}'s label came back round: cycle ${cycle.map((i) => 'R' + i).join(' → ')} → R${r.id}. R${victim.id} yields (priority ${best.prio})`);
+    // A victim that only reserved the wanted cell frees it by cancelling;
+    // otherwise it has to step aside.
+    const standing = best.rank !== 0;
+    if (victim === r) r.yieldNow(key, standing);
+    else r.send('r' + victim.id, { type: 'ABORT', key, standing });
+  }
+
+  // Ground truth, for measurement only (no robot or manager can see this):
+  // the real wait-for graph, from the managers' tables and the floor
+  // sensors. Each robot waits on at most one other, so a walk along the
+  // edges finds every cycle.
+  checkTruth() {
+    const t = this.tick;
+    const robots = this.robots;
+    const n = robots.length;
+    const { next, walk } = truthScratch(n);
+    for (let i = 0; i < n; i++) {
+      next[i] = this.trueHolder(robots[i]);
+      walk[i] = 0;
+    }
+    const now = new Set();
+    this.inCycle.clear();
+    for (let i = 0; i < n; i++) {
+      let j = i;
+      while (j >= 0 && !walk[j]) {
+        walk[j] = i + 1;
+        j = next[j];
+      }
+      if (j < 0 || walk[j] !== i + 1) continue;
+      const cyc = [j];
+      for (let k = next[j]; k !== j; k = next[k]) cyc.push(k);
+      for (const k of cyc) this.inCycle.add(k);
+      const key = cyc.sort((a, b) => a - b).join(',');
+      now.add(key);
+      if (!this.trueCycles.has(key)) {
+        this.trueCycles.set(key, t);
+        this.metrics.trueCycles++;
+      }
+    }
+    for (const [key, since] of this.trueCycles) {
+      if (now.has(key)) continue;
+      this.closeCycle(since);
+      this.trueCycles.delete(key);
+    }
+  }
+
+  closeCycle(since) {
+    const d = this.tick - since;
+    this.metrics.cycleTicks += d;
+    if (d > this.metrics.longestCycle) this.metrics.longestCycle = d;
+  }
+
+  // Who really blocks `r`: the holder of the cell it waits for, the robot
+  // the car is on its way to, or whoever is physically in the cell.
+  trueHolder(r) {
+    if (!r.alive || r.waitCell < 0) return -1;
+    const c = r.waitCell;
+    const m = this.managers[this.mgrOf(c)];
+    let h = m.entries.get(c)?.owner ?? -1;
+    if (h < 0 && m.pending) h = m.pending.robot;
+    if (h < 0 || h === r.id) h = this.occupantOtherThan(c, r.id);
+    return h === r.id ? -1 : h;
+  }
+
   onYield(r, key, cell) {
     this.metrics.yields++;
+    if (!this.inCycle.has(r.id)) this.metrics.needlessYields++;
     const open = key && this.openCycles.get(key);
     if (open) {
       this.metrics.resolved++;
@@ -626,6 +731,13 @@ export class Simulation {
   summary() {
     const m = this.metrics;
     const per1k = (v) => (m.moves ? (v * 1000) / m.moves : 0);
+    const secs = (ticks) => (ticks * this.cfg.tickMs) / 1000;
+    // Cycles still standing at the end count up to now.
+    let cycleTicks = m.cycleTicks, longest = m.longestCycle;
+    for (const since of this.trueCycles.values()) {
+      cycleTicks += this.tick - since;
+      longest = Math.max(longest, this.tick - since);
+    }
     return {
       tick: this.tick,
       seconds: (this.tick * this.cfg.tickMs) / 1000,
@@ -660,6 +772,15 @@ export class Simulation {
       rides: m.rides,
       avgLiftWait: m.liftWaits ? (m.liftWaitTicks * this.cfg.tickMs) / 1000 / m.liftWaits : null,
       recoveryCounts: Object.fromEntries(Object.entries(this.recovery).map(([k, v]) => [k, v.length])),
+      // Deadlock handling, measured against the ground truth.
+      detections: m.detections,
+      trueCyclesPer1k: per1k(m.trueCycles),
+      avgCycleLife: m.trueCycles ? secs(cycleTicks) / m.trueCycles : null,
+      longestCycle: secs(longest),
+      stuckNow: this.inCycle.size,
+      yieldsPer1k: per1k(m.yields),
+      needlessYieldPct: m.yields ? (m.needlessYields * 100) / m.yields : null,
+      replansPer1k: per1k(m.replans),
     };
   }
 }
@@ -682,6 +803,16 @@ function collisionGrid(floors, robots) {
     grid.py = new Float32Array(robots);
   }
   return grid;
+}
+
+// Scratch arrays for checkTruth, shared like the collision grid.
+const truth = { next: new Int32Array(0), walk: new Int32Array(0) };
+function truthScratch(n) {
+  if (truth.next.length < n) {
+    truth.next = new Int32Array(n);
+    truth.walk = new Int32Array(n);
+  }
+  return truth;
 }
 
 function angleDiff(a, b) {

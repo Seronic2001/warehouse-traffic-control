@@ -4,7 +4,8 @@
 //   C. recovery times after injected crashes, pauses and manager crashes
 //   D. congestion control over long runs
 //   E. multi-storey: throughput vs number of lifts and of floors
-import { MODE_SERIES } from '../render/palette.js';
+//   F. deadlock strategies vs robot density, measured against the ground truth
+import { MODE_SERIES, DEADLOCK_SERIES } from '../render/palette.js';
 import { DEFAULTS, WAIT_BIN_SECONDS } from '../sim/simulation.js';
 import { runPool, poolSize } from './pool.js';
 
@@ -27,6 +28,23 @@ const FLOOR_COUNTS = [1, 2, 3];
 const STOREY = { mode: 'detect', robots: 90 }; // per run; spread over all floors
 const STOREY_TICKS = BENCH_TICKS;
 const STOREY_SEEDS = [1, 2];
+const DEADLOCKS = Object.keys(DEADLOCK_SERIES);
+const DL_DENSITIES = [80, 120, 160, 200];
+const DL_TICKS = BENCH_TICKS;
+
+// Sweep F. A "real cycle" is one in the true wait-for graph (managers'
+// tables and floor sensors), which no robot can see: it is how the
+// strategies are compared on equal terms.
+const DL_METRICS = [
+  { key: 'perMin', title: 'Average throughput, whole run', note: 'Tasks completed per minute over the whole run', fmt: (v) => v.toFixed(0) },
+  { key: 'throughput', title: 'Throughput in the final minute', note: 'Near 0: the floor locked up (gridlock or livelock)', fmt: (v) => v.toFixed(0) },
+  { key: 'trueCyclesPer1k', title: 'Real wait-for cycles per 1,000 moves', note: 'Cycles that actually existed, whoever (if anyone) found them', fmt: (v) => v.toFixed(2) },
+  { key: 'longestCycle', title: 'Longest-lived real cycle', note: 'Seconds a single cycle stood before something broke it', fmt: (v) => `${v.toFixed(1)}s` },
+  { key: 'yieldsPer1k', title: 'Gave way, per 1,000 moves', note: 'A robot cancelled its request and replanned (victim, died, or timed out)', fmt: (v) => v.toFixed(1) },
+  { key: 'needlessYieldPct', title: 'Gave way with no real cycle', note: 'Share of give-ways where the robot was on no real cycle at the time', fmt: (v) => `${v.toFixed(0)}%` },
+  { key: 'waitP95', title: '95th-percentile wait for a lease', note: 'Seconds: 95% of lease requests are granted within this', fmt: (v) => `${v.toFixed(2)}s` },
+  { key: 'msgsPerMove', title: 'Messages per move', note: 'Everything: leases, renewals, probes, labels, plans', fmt: (v) => v.toFixed(1) },
+];
 
 const DENSITY_METRICS = [
   { key: 'collisionsPer1k', title: 'Collisions per 1,000 moves', note: 'Both protocols must stay at 0', fmt: (v) => v.toFixed(1) },
@@ -48,6 +66,7 @@ export class Bench {
   constructor(app) {
     this.app = app;
     this.results = new Map();
+    this.el = { grid: $('bench-grid'), table: $('bench-table') };
     this.isOpen = false;
     $('btn-bench').addEventListener('click', () => this.open());
     for (const b of document.querySelectorAll('#bench .bench-close')) b.addEventListener('click', () => this.close());
@@ -61,7 +80,7 @@ export class Bench {
       $('bench-grid').hidden = !t.hidden;
     });
     const cores = poolSize();
-    $('bench-dur').textContent = cores > 5 ? `about 4 minutes on ${cores} CPU cores` : cores > 1 ? `about 10 minutes on ${cores} CPU cores` : 'about 20 minutes';
+    $('bench-dur').textContent = cores > 5 ? `about 7 minutes on ${cores} CPU cores` : cores > 1 ? `about 15 minutes on ${cores} CPU cores` : 'about 35 minutes';
     this.refresh();
   }
 
@@ -84,6 +103,7 @@ export class Bench {
       b.setAttribute('aria-selected', on);
       $('bench-pane-' + b.dataset.tab).hidden = !on;
     }
+    this.onTab?.(name);
   }
 
   close() {
@@ -96,6 +116,7 @@ export class Bench {
     delete base.mode;
     delete base.robots;
     base.floors = 1; // these sweeps are about one floor
+    base.deadlock = 'cmh'; // A–E compare modes with edge-chasing; F compares deadlock strategies
     const jobs = [];
     for (const n of DENSITIES) for (const mode of MODES) jobs.push({ id: `A:${mode}:${n}`, cfg: { ...base, mode, robots: n }, ticks: SWEEP_A_TICKS });
     for (const m of MARGINS) for (const seed of MARGIN_SEEDS) jobs.push({ id: `B:${m}:${seed}`, cfg: { ...base, ...HOSTILE, safetyMargin: m, seed }, ticks: SWEEP_A_TICKS });
@@ -105,7 +126,16 @@ export class Bench {
       for (const lifts of LIFT_COUNTS) jobs.push({ id: `E:lifts:${lifts}:${seed}`, cfg: { ...base, ...STOREY, floors: 3, lifts, seed }, ticks: STOREY_TICKS });
       for (const floors of FLOOR_COUNTS) if (floors !== 3) jobs.push({ id: `E:floors:${floors}:${seed}`, cfg: { ...base, ...STOREY, floors, lifts: 4, seed }, ticks: STOREY_TICKS });
     }
+    for (const n of DL_DENSITIES) for (const dl of DEADLOCKS) jobs.push({ id: `F:${dl}:${n}`, cfg: { ...base, mode: 'detect', deadlock: dl, robots: n }, ticks: DL_TICKS });
     return jobs;
+  }
+
+  // Sweep F value for a strategy/density.
+  f(dl, n, key) {
+    const r = this.results.get(`F:${dl}:${n}`);
+    if (!r) return null;
+    if (key === 'perMin') return r.tasks / ((DL_TICKS * TICK_S) / 60);
+    return r[key] ?? null;
   }
 
   run() {
@@ -151,10 +181,10 @@ export class Bench {
   }
 
   draw() {
-    const grid = $('bench-grid');
+    const grid = this.el.grid;
     if (!this.results.size) {
-      grid.innerHTML = `<div class="bench-empty">Run the sweeps to compare strategies across 50 to 200 robots, measure the effect of the lease safety margin, time recovery after crashes, pauses and manager failures, and test congestion control, each run covering 30 minutes of warehouse time.</div>`;
-      $('bench-table').innerHTML = '';
+      grid.innerHTML = `<div class="bench-empty">Run the sweeps to compare strategies across 50 to 200 robots, measure the effect of the lease safety margin, time recovery after crashes, pauses and manager failures, test congestion control, and compare five ways of handling deadlocks, each run covering 30 minutes of warehouse time.</div>`;
+      this.el.table.innerHTML = '';
       return;
     }
     grid.innerHTML = '';
@@ -242,6 +272,23 @@ export class Bench {
     grid.appendChild(lineChart({ title: 'Throughput vs lifts', note: 'Tasks per minute, 3 floors', xs: LIFT_COUNTS, xFmt: (n) => `${n}`, xName: 'lifts', fmt: (v) => v.toFixed(0), series: [{ label: det.label, color: det.hex, values: LIFT_COUNTS.map((n) => e('lifts', n, per)) }] }));
     grid.appendChild(lineChart({ title: 'Wait for a lift', note: 'Seconds from asking for the car to getting it, 3 floors', xs: LIFT_COUNTS, xFmt: (n) => `${n}`, xName: 'lifts', fmt: (v) => `${v.toFixed(1)}s`, series: [{ label: det.label, color: det.hex, values: LIFT_COUNTS.map((n) => e('lifts', n, (r) => r.avgLiftWait)) }] }));
     grid.appendChild(lineChart({ title: 'Throughput vs floors', note: 'Tasks per minute with 4 lifts (one floor: no lifts)', xs: FLOOR_COUNTS, xFmt: (n) => `${n}`, xName: 'floors', fmt: (v) => v.toFixed(0), series: [{ label: det.label, color: det.hex, values: FLOOR_COUNTS.map((n) => e('floors', n, per)) }] }));
+
+    // ── F ──
+    const key = DEADLOCKS.map((k) => `<span><i style="background:${DEADLOCK_SERIES[k].hex}"></i>${DEADLOCK_SERIES[k].label}</span>`).join('');
+    grid.appendChild(
+      section(
+        'Deadlock strategies vs robot density',
+        `Leases + detection with each way of handling deadlocks, ${(DL_TICKS * TICK_S) / 60} minutes per run. Edge-chasing and Mitchell–Merritt detect cycles; Wait-Die prevents them by task age; Timeout gives way after ${(DEFAULTS.waitTimeout * TICK_S).toFixed(1)} s without detecting anything; WHCA* steers routes with space-time reservations and keeps edge-chasing as a fallback. A real cycle is one in the true wait-for graph, which no robot can see. <span class="sec-key wrap">${key}</span>`,
+      ),
+    );
+    for (const metric of DL_METRICS) {
+      grid.appendChild(
+        lineChart({
+          title: metric.title, note: metric.note, xs: DL_DENSITIES, xFmt: (n) => `${n}`, xName: 'robots', fmt: metric.fmt,
+          series: DEADLOCKS.map((k) => ({ label: DEADLOCK_SERIES[k].label, color: DEADLOCK_SERIES[k].hex, values: DL_DENSITIES.map((n) => this.f(k, n, metric.key)) })),
+        }),
+      );
+    }
     this.table();
   }
 
@@ -307,7 +354,13 @@ export class Bench {
         if (r) html += `<tr><td>${floors}</td><td>${floors === 1 ? '—' : 4}</td><td>${seed}</td><td>${(r.tasks / ((STOREY_TICKS * TICK_S) / 60)).toFixed(0)}</td><td>${r.rides}</td><td>${r.avgLiftWait == null ? '—' : r.avgLiftWait.toFixed(2) + ' s'}</td><td>${r.collisions}</td></tr>`;
       }
     }
-    $('bench-table').innerHTML = html + '</table>';
+    html += `</table><h4>Deadlock strategies (${(DL_TICKS * TICK_S) / 60} minutes)</h4><table><tr><th>Strategy</th><th>Robots</th>${DL_METRICS.map((m) => `<th>${m.title}</th>`).join('')}<th>Collisions</th></tr>`;
+    for (const n of DL_DENSITIES)
+      for (const k of DEADLOCKS) {
+        const r = this.results.get(`F:${k}:${n}`);
+        if (r) html += `<tr><td>${DEADLOCK_SERIES[k].label}</td><td>${n}</td>${DL_METRICS.map((m) => `<td>${fmt(this.f(k, n, m.key), m.fmt)}</td>`).join('')}<td>${r.collisions}</td></tr>`;
+      }
+    this.el.table.innerHTML = html + '</table>';
   }
 }
 

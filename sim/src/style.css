@@ -279,6 +279,51 @@ input[type='range']::-moz-range-thumb { width: 14px; height: 14px; border-radius
   padding: 6px 10px; font-family: var(--mono); font-size: 12px;
 }
 .seed-row .ghost { padding: 4px 10px; font-size: 15px; }
+/* Dropdown (ui/dropdown.js): a button showing the choice, and a menu list
+   attached to <body> so the scrolling side panel can't clip it. */
+.field > .select { position: relative; display: block; margin: 0; }
+.dd-button {
+  position: relative; display: flex; align-items: center; gap: 9px; width: 100%;
+  color: var(--text); text-align: left; cursor: pointer;
+  background: rgba(var(--ink), 0.034); border: 1px solid var(--line-2); border-radius: 9px;
+  padding: 7px 28px 7px 10px; font: inherit; font-size: 12px; font-weight: 600;
+  transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+.dd-button span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dd-button:hover { background: rgba(var(--ink), 0.06); }
+.dd-button:focus-visible, .dd-button.open { outline: none; border-color: var(--cyan); box-shadow: 0 0 0 3px rgba(8, 145, 178, 0.2); }
+.dd-button::after {
+  content: ''; position: absolute; right: 11px; top: 50%; width: 6px; height: 6px; margin-top: -5px;
+  border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted);
+  transform: rotate(45deg); transition: transform 0.15s, margin 0.15s;
+}
+.dd-button.open::after { transform: rotate(-135deg); margin-top: -1px; }
+.dd-button i, .dd-list i { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--c); }
+.dd-list {
+  position: fixed; z-index: 40; margin: 0; padding: 5px; list-style: none;
+  max-height: min(360px, calc(100vh - 16px)); overflow: auto; scrollbar-width: thin;
+  background: var(--panel-solid); border: 1px solid var(--line-2); border-radius: 12px;
+  box-shadow: 0 14px 40px rgba(var(--shade), calc(0.18 * var(--shade-k)));
+  animation: ddIn 0.12s ease-out;
+}
+.dd-list:focus { outline: none; }
+@keyframes ddIn { from { opacity: 0; transform: translateY(-4px); } }
+.dd-list li {
+  position: relative; display: flex; align-items: flex-start; gap: 10px;
+  padding: 8px 30px 8px 10px; border-radius: 8px; cursor: pointer;
+}
+.dd-list li i { margin-top: 4px; }
+.dd-list li span { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.dd-list li b { font-size: 12.5px; font-weight: 600; color: var(--text); }
+.dd-list li small { font-size: 11.5px; line-height: 1.4; color: var(--muted); }
+.dd-list li.active { background: rgba(var(--ink), 0.06); }
+.dd-list li[aria-selected='true'] { background: rgba(8, 145, 178, 0.1); }
+.dd-list li[aria-selected='true'].active { background: rgba(8, 145, 178, 0.16); }
+.dd-list li[aria-selected='true']::after {
+  content: ''; position: absolute; right: 13px; top: 12px; width: 4px; height: 8px;
+  border-right: 2px solid var(--cyan); border-bottom: 2px solid var(--cyan); transform: rotate(45deg);
+}
+.field-note { display: block; margin-top: 6px; font-size: 11.5px; line-height: 1.45; color: var(--muted); }
 .toggles { display: grid; gap: 7px; }
 .toggles label { display: flex; align-items: center; gap: 9px; color: var(--text-2); font-size: 12.5px; cursor: pointer; }
 .toggles input { display: none; }
@@ -588,10 +633,22 @@ body.has-timeline .hint { display: none; }
 .bench-table th, .bench-table td { padding: 6px 8px; border-bottom: 1px solid var(--line); text-align: right; font-family: var(--mono); }
 .bench-table th { color: var(--muted); font-family: Inter, sans-serif; font-weight: 600; }
 .bench-table td:first-child, .bench-table th:first-child { text-align: left; font-family: Inter, sans-serif; }
+.saved-jump { display: flex; gap: 6px; margin-top: 14px; flex-wrap: wrap; }
+.saved-jump button {
+  border: 1px solid var(--line-2); background: rgba(var(--ink), 0.034); color: var(--text-2);
+  border-radius: 99px; padding: 4px 12px; font-size: 12px;
+}
+.saved-jump button:hover { background: rgba(var(--ink), 0.07); color: var(--text); }
+.saved-part { margin-top: 34px; padding-top: 22px; border-top: 1px solid var(--line-2); }
+.saved-part h2 { margin: 0; font-size: 18px; }
+#saved-meta b { color: var(--text); }
 .bench-empty { color: var(--muted); padding: 40px 0; text-align: center; grid-column: 1 / -1; }
 
 .sec-key { display: inline-flex; align-items: center; gap: 6px; margin-left: 6px; white-space: nowrap; }
 .sec-key i { display: inline-block; width: 14px; height: 3px; border-radius: 2px; margin-left: 6px; }
+.sec-key.wrap { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 6px 0 0; white-space: normal; }
+.sec-key.wrap span { white-space: nowrap; }
+.sec-key.wrap i { margin: 0 6px 0 0; vertical-align: 3px; }
 
 /* ───────── responsive ───────── */
 @media (max-width: 1380px) {
@@ -713,6 +770,11 @@ body.touring.tour-dash .tour { bottom: 96px; }
 .pill.bad { background: rgba(225, 29, 72, 0.16); color: var(--red); }
 .tour-actions .primary { padding: 8px 18px; font-size: 13.5px; }
 .tour-actions .ghost { padding: 7px 14px; }
+
+/* draggable cards (tour, narration) */
+.drag-handle { cursor: grab; touch-action: none; user-select: none; }
+.dragging, .dragging .drag-handle { cursor: grabbing; }
+.dragging { transition: none; }
 
 /* pinned annotations in the 3D scene */
 .anno { width: 0; height: 0; position: relative; pointer-events: none; }

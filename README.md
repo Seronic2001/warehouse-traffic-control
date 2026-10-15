@@ -9,7 +9,8 @@ cd sim
 npm install
 npm run dev        # http://localhost:5173
 npm run build      # static build in sim/dist/ (any static host works)
-npm test           # headless checks: safety under failures, replay, every mode on every building
+npm run precompute # re-run every benchmark into src/data/precomputed.csv
+npm test           # headless checks: safety under failures, replay, every mode on every building, every deadlock strategy
 ```
 
 ## What to show in a demo
@@ -27,12 +28,13 @@ npm test           # headless checks: safety under failures, replay, every mode 
 | `V` | **Floor view** (multi-storey only): cycles between all floors (an exploded stack) and each single floor. The same choice is in the floor bar under the mode tabs. |
 | `M` | **Message timeline** for the selected robot (also the **Timeline** button in the inspector). Each process the robot talks to gets a lane: itself, its region managers, the world, other robots. Each message is an arrow from sender to receiver; lost messages end in a ×. Above the robot's lane are the leases it believes it holds. A lease bar turns hatched once the robot's own clock says it has expired. Hover for details, toggle message kinds, and pick a 4/8/16 s window. |
 | `[` / `]` | **Rewind / forward 5 s.** The scrubber above the dock can drag to any earlier moment of the run. Marks on it show deadlocks, crashes, fencing, manager failures and partitions; click one to jump to 1 s before it. Playing on from an earlier moment replays the same future. Acting there (crash, freeze, cut the network) starts a new branch. |
-| `B` | **Benchmark** (runs on a pool of Web Workers, one per spare CPU core; about 4 minutes on an 8-core laptop): strategies vs density (collisions, throughput, deadlocks, time to resolve, wait distribution and p95, messages per move); the lease safety margin under a hostile network; recovery times after injected robot crashes, pauses and manager crashes; and congestion control on vs off. Every run covers 30 minutes of warehouse time. |
+| `B` | **Benchmark** (runs on a pool of Web Workers, one per spare CPU core): strategies vs density (collisions, throughput, deadlocks, time to resolve, wait distribution and p95, messages per move); the lease safety margin under a hostile network; recovery times after injected robot crashes, pauses and manager crashes; congestion control on vs off; multi-storey lifts; and the five deadlock strategies against each other. Every run covers 30 minutes of warehouse time. About 7 minutes on an 8-core laptop. |
 | `C` | **Distributed vs centralised**, the second tab of the Benchmark window (about 7 minutes on 8 cores, 56 runs of 30 simulated minutes each). Races this design against a single central server that owns every cell, finds deadlocks by searching its whole wait-for graph, and knows every region's load exactly. Robots, leases, fencing, network and routing are identical. A scorecard marks each category *distributed better*, *close* or *centralised better*, computed from the runs. |
+| `P` | **Saved results**, the third tab of the Benchmark window. It shows every run from the other two tabs instantly, from data computed ahead of time with the default settings (seed 42, 124 runs of 30 simulated minutes). Use it when presenting. The raw numbers are in `sim/src/data/precomputed.csv`, one row per run. Regenerate them with `npm run precompute` (about 12 minutes on 8 cores). |
 | `Space` / `R` / `Esc` | Pause or resume / restart from the seed / close or exit |
 | `D` | Toggle light / dark theme (also the sun/moon button; the choice is remembered) |
 
-Click any robot to see its leases, epochs, expiry bars and what it is waiting for. The inspector also has **Crash** and **Freeze** buttons, opens the robot's message timeline, and lets you follow the robot with the camera. Click a cell to see the manager's table entry for it: state, owner, epoch and queue. The cell inspector can also crash that region's manager or **cut the network** for every robot in the 5×5 cells around it for 8 s. The left panel sets network delay and loss, lease length, the **safety margin** and **clock drift**, and switches **congestion control** on or off. The **Region load** layer tints each region by how full its manager says it is, with the percentage next to each manager. A region at or above the admission threshold is outlined.
+Click any robot to see its leases, epochs, expiry bars and what it is waiting for. The inspector also has **Crash** and **Freeze** buttons, opens the robot's message timeline, and lets you follow the robot with the camera. Click a cell to see the manager's table entry for it: state, owner, epoch and queue. The cell inspector can also crash that region's manager or **cut the network** for every robot in the 5×5 cells around it for 8 s. The left panel picks the **deadlock handling** for the *Leases + detection* mode (see below), and sets network delay and loss, lease length, the **safety margin** and **clock drift**, and switches **congestion control** on or off. The **Region load** layer tints each region by how full its manager says it is, with the percentage next to each manager. A region at or above the admission threshold is outlined.
 
 ## How it maps to the proposal
 
@@ -48,6 +50,8 @@ Click any robot to see its leases, epochs, expiry bars and what it is waiting fo
 | Message timeline recorder | `sim/src/sim/trace.js`, `sim/src/ui/timeline.js` |
 | Floors and lifts (layout, A* rides) | `sim/src/sim/layout.js`, `sim/src/sim/astar.js` |
 | Lift managers | `sim/src/sim/lift.js` |
+| Deadlock strategies (edge-chasing, Mitchell–Merritt, Wait-Die, Timeout) | `sim/src/sim/robot.js`, `sim/src/sim/simulation.js` |
+| WHCA* space-time reservations | `sim/src/sim/whca.js` |
 
 Robots, managers and the world only talk to each other through network messages. The single exception is the move actuator, which is where fencing happens. Every run is replayable from its seed.
 
@@ -99,6 +103,54 @@ A crashed manager loses its whole reservation table. On restart it increments an
 * Safety margin under a hostile network (20% loss, delay up to 300 ms, ±20% drift, 2 s leases): over 30 minutes this network wears the floor down at **every** margin. Whole-run throughput is 1–2 tasks/min with up to 0.4 s of margin, 5–7 at 0.6–0.8 s and best at 1.2 s, with only 11 tasks/min. Leases lost by working robots fall from about 136–153 per 1,000 moves at 0–0.2 s to 46 at 1.2 s. At 1.6 s the margin eats most of the lease and robots can almost never move. Short runs hide this collapse: in 2-minute runs the sweet spot was at 0.6–0.8 s.
 * Recovery (120 robots; 120 robot crashes, about 118 pauses and 40 manager crashes per run): a crashed robot's lease is taken back after about 2.7 s and its Blocked cell is cleared after about 7.4 s. A paused robot resyncs 0.3 s after waking. A crashed manager is granting again after about 4.3 s when every robot answers (4 s down plus reconciliation), and after 5.5 s when it has to wait out the reconciliation timeout, as it does in this benchmark whenever a crashed robot is still on the floor.
 * Ordered acquisition, as implemented here (queue for the next cell, then grab the rest of the segment all-or-nothing with backoff), only works at low density. It matches detection at 50 robots (about 60 tasks/min), falls to 55 over the whole run at 100 (detection: 101), and collapses at 150 (10 tasks/min over the whole run, 10 deadlocks per 1,000 moves and 147 messages per move) and at 200 (4 tasks/min) from repeated backoff. That is worth discussing in the report rather than hiding.
+
+### Deadlock strategies
+
+**Deadlock handling** in the left panel switches how the *Leases + detection* mode deals with deadlocks. Everything else stays the same: leases, fencing, the network and routing. The other mode tabs and the scripted scenarios keep edge-chasing.
+
+| Strategy | How it works | Notes |
+|---|---|---|
+| **Edge-chasing** (Chandy–Misra–Haas, the default) | A robot blocked for 0.8 s sends a probe along its wait-for edge. Blocked robots forward it. If it comes back, the cycle's best victim gives way (one that only *reserved* the wanted cell, then one with another route, then the lowest priority). | A probe always stops: each robot waits on at most one other, and a robot never forwards a probe it is already on, so a probe makes at most N hops. Lost probes are re-sent. Every member can detect the same cycle, and duplicates are filtered by a simulator-wide map, which is a shortcut no real robot would have. |
+| **Label passing** (Mitchell–Merritt, priority variant) | Each robot has a public and a private label. A new wait takes a fresh, larger label; a waiting robot copies a larger public label from the robot it waits on. A robot whose own label comes all the way back round is on a cycle. It is the **only** detector, so no duplicates and no global filter. The label also carries the best victim seen on the way, by the same rules as edge-chasing. | The textbook rule (the detector itself gives way) locked the floor up at 200 robots: the detector was often boxed in and could free nothing. Carrying the victim choice with the label fixed that. |
+| **Wait-Die** (prevention) | Age = when the robot's current task began. A robot may wait only for a *younger* holder; a younger one "dies": it cancels the request and replans, keeping its age. Managers tell a waiter the holder's age with each `QUEUED` reply. | Wait-for edges only ever point from older to younger robots, so no cycle can persist. A dying robot can't be rolled back out of the cell it stands in, though. So when an older robot waits on a younger one, the manager nudges the younger, and if it dies it also pulls aside into an empty neighbouring cell. |
+| **Timeout** | No detection: any robot that has waited 2 s gives way. | The simple bar the others should beat. |
+| **WHCA\*** (Windowed Hierarchical Cooperative A\*) + edge-chasing | Robots share a space-time reservation table (a planning service, 2 messages per plan). Each plans 16 slots of 0.4 s ahead through space *and* time, waiting a slot where needed, reserves its route, and replans every half window or once 2 slots behind. The heuristic is the true distance to the goal, from a backward search over the same graph A* uses. | Reservations only steer routing; leases still give safety and edge-chasing still catches deadlocks. Lift rides are planned as before. Reservations alone can gridlock (everyone waiting for a slot someone else keeps reserving), so after two plans in a row with no move a robot drives its plain path. |
+
+To compare them fairly, the simulator also tracks the **true** wait-for graph every tick (from the managers' tables and the floor sensors). No robot or manager can see it; it is only used for measurement. A *real cycle* is a cycle in that graph. *Gave way needlessly* means the robot that gave way was on no real cycle at that moment.
+
+**Findings (seed 42, 30 minutes per run).** "Whole run" is total tasks divided by 30. "Final" is the last minute. 0 collisions in all 20 runs.
+
+| Robots | Strategy | Tasks/min, whole run | Final | Real cycles / 1k moves | Longest real cycle | Gave way / 1k moves | Of which needless | Msgs / move |
+|---|---|---|---|---|---|---|---|---|
+| 80 | Edge-chasing | 88 | 82 | 0 | — | 0 | — | 6.1 |
+| 80 | Mitchell–Merritt | 89 | 92 | 0 | — | 0 | — | 6.1 |
+| 80 | WHCA* | 76 | 89 | 0.21 | 1.1 s | 0.2 | 7% | 6.2 |
+| 80 | Timeout | 82 | 81 | 0.29 | 2.0 s | 12.7 | 98% | 5.7 |
+| 80 | Wait-Die | 57 | 32 | 12.8 | 0.3 s | 390 | 97% | 7.4 |
+| 120 | Edge-chasing | 105 | 113 | 0 | — | 0 | — | 7.6 |
+| 120 | Mitchell–Merritt | 103 | 102 | 0 | — | 0 | — | 7.9 |
+| 120 | WHCA* | 96 | 101 | 0.35 | 1.5 s | 0.3 | 1% | 7.2 |
+| 120 | Timeout | 92 | 94 | 0.92 | 2.0 s | 31 | 97% | 6.2 |
+| 120 | Wait-Die | 85 | 86 | 0.13 | 0.3 s | 201 | 100% | 6.6 |
+| 160 | Edge-chasing | 100 | 99 | 0.03 | 1.0 s | 0.03 | 90% | 11.3 |
+| 160 | Mitchell–Merritt | 100 | 91 | 0.03 | 1.0 s | 0.03 | 67% | 10.5 |
+| 160 | WHCA* | 103 | 98 | 0.38 | 1.4 s | 0.3 | 3% | 9.0 |
+| 160 | Timeout | 90 | 87 | 1.79 | 2.0 s | 58 | 97% | 6.8 |
+| 160 | Wait-Die | 46 | **0** | 24.3 | 0.3 s | 1,111 | 98% | 12.4 |
+| 200 | Edge-chasing | 73 | 104 | 0.28 | 0.8 s | 0.2 | 87% | 25.7 |
+| 200 | Mitchell–Merritt | 73 | 91 | 0.90 | 3.9 s | 0.4 | 69% | 17.6 |
+| 200 | WHCA* | 84 | 78 | 0.49 | 1.2 s | 0.4 | 32% | 16.9 |
+| 200 | Timeout | 80 | 80 | 2.98 | 2.0 s | 88 | 97% | 7.4 |
+| 200 | Wait-Die | 13 | **1** | 61.0 | 0.3 s | 3,004 | 98% | 25.1 |
+
+* **Real deadlocks are rare.** Up to 120 robots no real cycle formed at all under either detector. Each detector costs almost nothing until it is needed.
+* **Edge-chasing reports false deadlocks at high density.** At 160–200 robots, traffic forms long slow rings round rack blocks, 20+ robots each queued behind the next. A probe walks the ring in 20+ hops while the front of it keeps moving, so it comes back reporting a cycle that never existed all at once, and someone gives way for nothing (87% of give-ways at 200 robots). Mitchell–Merritt has fewer (69%): its label has to come all the way back while every member is still waiting on the same robot.
+* **Mitchell–Merritt sends fewer messages at 200 robots** (17.6 per move against 25.7): one label exchange per edge instead of a probe from every blocked robot.
+* **WHCA\* gives the best whole-run average at 160–200 robots** (103 and 84 tasks/min) and the fewest needless give-ways, but it is slower at low density, where robots hold back for planned waits they did not need, and its final-minute figure at 200 is lower.
+* **Timeout works but is crude**: 97–98% of its give-ways were not needed, and real cycles stand for the full 2 s before anyone moves.
+* **Wait-Die breaks down here.** It does what it promises: no real cycle ever lasted more than 0.3 s. But it relies on a transaction that dies releasing everything it holds, and a robot can't release the cell it stands in. In a jam with no empty cell to pull into, the youngest robot dies over and over (3,000 times per 1,000 moves at 200 robots) while the older robots queued behind it wait for good: a livelock with no cycle. The floor stops at 160 and 200 robots. Even at 120 robots it gives way 200 times per 1,000 moves.
+
+The **Benchmark** (`B`) runs this comparison as section F.
 
 ### Distributed vs centralised (`C`)
 

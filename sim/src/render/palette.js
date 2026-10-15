@@ -23,6 +23,16 @@ export const EVENT_COLORS = {
 };
 
 // Benchmark series: categorical slots 1–3 of the validated light palette.
+// Deadlock strategies of lease + detection mode (Benchmark sweep F).
+// Edge-chasing keeps the orange it has as "Leases + edge-chasing".
+export const DEADLOCK_SERIES = {
+  cmh: { hex: '#eb6834', label: 'Edge-chasing (CMH)' },
+  mm: { hex: '#2a78d6', label: 'Label passing (Mitchell–Merritt)' },
+  whca: { hex: '#1baf7a', label: 'WHCA* + edge-chasing' },
+  timeout: { hex: '#eda100', label: 'Timeout' },
+  waitdie: { hex: '#e87ba4', label: 'Wait-Die' },
+};
+
 export const MODE_SERIES = {
   baseline: { hex: '#2a78d6', label: 'Baseline (no coordination)' },
   detect: { hex: '#eb6834', label: 'Leases + edge-chasing' },

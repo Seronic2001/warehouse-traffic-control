@@ -50,6 +50,7 @@ export class RegionManager {
     this.winCount = 0;
     this.handled = 0;
     this.outageRobots = null; // robots that tried to reach us while we were down
+    this.ages = new Map(); // Wait-Die: robot -> age key, from its requests and renewals
   }
 
   // Gossip round: refresh our own load, then push the whole view to the
@@ -109,6 +110,7 @@ export class RegionManager {
     this.backlog = [];
     this.inq = [];
     this.view = emptyView(this.nRegions);
+    this.ages = new Map();
     this.outageRobots = new Set();
     sim.event('mgrdown', this.crashText(), { mgr: this.id });
     sim.flag('mgrDown');
@@ -217,6 +219,17 @@ export class RegionManager {
     // Replies to robots carry this manager's load view (piggybacked: no
     // extra messages).
     if (to[0] === 'r' && this.sim.cfg.congestion && (msg.type === 'GRANT' || msg.type === 'QUEUED' || msg.type === 'RENEWED')) msg.loads = this.view;
+    // Wait-Die: tell a waiter how old the holder is, as far as we know. Ages
+    // only grow, so a stale one errs towards "older": the waiter gives way.
+    // An older robot does wait, and the holder is nudged: if it ever gives
+    // way itself, it should also pull out of the cell. (A robot can't be
+    // "rolled back" out of the cell it stands in; without this, a younger
+    // robot can give way for ever in front of an older one that waits for
+    // ever.)
+    if (msg.type === 'QUEUED' && this.sim.cfg.mode === 'detect' && this.sim.cfg.deadlock === 'waitdie') {
+      msg.holderTs = this.ages.get(msg.holder);
+      if (msg.holder >= 0 && this.ages.get(+to.slice(1)) < msg.holderTs) this.sim.net.send(this.addr, 'r' + msg.holder, { type: 'NUDGE', cell: msg.cell });
+    }
     this.sim.net.send(this.addr, to, msg);
   }
 
@@ -271,6 +284,7 @@ export class RegionManager {
       this.backlog.push(m);
       return;
     }
+    if (m.ts !== undefined && !(this.ages.get(m.robot) >= m.ts)) this.ages.set(m.robot, m.ts);
     sim.metrics.mgrMsgs++;
     this.handled++;
     this.winCount++;

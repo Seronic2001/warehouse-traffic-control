@@ -35,6 +35,7 @@ export class Compare {
   constructor(app) {
     this.app = app;
     this.results = new Map();
+    this.el = { grid: $('cmp-grid') };
     $('cmp-run').addEventListener('click', () => this.run());
     const cores = poolSize();
     $('cmp-dur').textContent = cores > 5 ? `about 7 minutes on ${cores} CPU cores` : cores > 1 ? `about 15 minutes on ${cores} CPU cores` : 'half an hour or more';
@@ -52,6 +53,7 @@ export class Compare {
     delete base.mode;
     delete base.robots;
     delete base.seed;
+    base.deadlock = 'cmh'; // the distributed side is edge-chasing, whatever the picker says
     base.mgrRate = 0;
     base.floors = 1;
     base.injectFailures = false;
@@ -169,7 +171,7 @@ export class Compare {
   }
 
   draw() {
-    const grid = $('cmp-grid');
+    const grid = this.el.grid;
     if (!this.results.size) {
       grid.innerHTML = `<div class="bench-empty">Run the comparison to race this project's distributed design against a single central server: normal operation from 50 to 200 robots, the same per-node hardware, and coordinator crashes.</div>`;
       return;

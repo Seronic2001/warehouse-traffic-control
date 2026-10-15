@@ -2,11 +2,18 @@
 // through network messages (to region managers and other robots) and through
 // the world simulator's actuator (tryMove), which enforces fencing.
 import { astar } from './astar.js';
+import { spaceTimePlan } from './whca.js';
 import { regionOf, fmtCell, xOf, yOf, cellOf, floorOf, rideTicks, W, H } from './layout.js';
 
 
 const URGENT_RENEW_GAP = 4; // ticks
 const SAME_FLOOR_DROP = 0.7; // share of jobs dropped on the station floor nearest the pickup
+
+// Mitchell–Merritt labels must be unique: a counter with the robot ID in the
+// low bits. mmInc() gives a label above `u` that only this robot can make.
+const MM_IDS = 4096;
+const mmInc = (u, id) => (Math.floor(u / MM_IDS) + 1) * MM_IDS + id;
+const mmBetter = (a, b) => a.rank < b.rank || (a.rank === b.rank && (a.prio < b.prio || (a.prio === b.prio && a.id > b.id)));
 
 export class Robot {
   constructor(sim, id, cell) {
@@ -102,6 +109,31 @@ export class Robot {
     this.crashTick = 0;
     this.altCell = -1; // hasAlternative() cache: the question last answered
     this.segPath = null; // segment() cache: the path it was computed for
+    this.age = sim.tick; // Wait-Die timestamp: when the current task began
+    // Mitchell–Merritt: public and private labels, and the robots that have
+    // recently asked for our public label (they wait on us).
+    this.mmU = this.mmV = mmInc(0, this.id);
+    this.mmBest = null; // best victim on the chain our public label came along
+    this.mmAskers = new Map(); // robot -> { t, wants }: when it last asked, and for which cell
+    this.lastAsk = -1e9;
+    // WHCA*: the plan being followed. For each move: `due`, the tick it is
+    // scheduled to start, and `hold`, the tick before which it must not
+    // (only after a planned wait: otherwise running early is fine).
+    this.st = null;
+    this.stStalls = 0; // WHCA* plans in a row that only waited
+    this.nudge = null; // Wait-Die: an older robot waits for this cell { cell, t }
+  }
+
+  // The deadlock strategy this robot follows, or null outside lease +
+  // detection mode (ordered and centralised keep their own rules).
+  get dl() {
+    const cfg = this.sim.cfg;
+    return cfg.mode === 'detect' ? cfg.deadlock : null;
+  }
+
+  // Wait-Die age: older (smaller) wins; ties go to the lower ID.
+  get ageKey() {
+    return this.age * MM_IDS + this.id;
   }
 
   get protocol() {
@@ -161,6 +193,13 @@ export class Robot {
     }
     if (t < this.yieldUntil) return;
     if (!this.task) this.newTask();
+    // WHCA*: a slot behind schedule, the reservations no longer describe
+    // where this robot will be. Replan from here.
+    const st = this.st;
+    if (st && st.path === this.path && this.path.length && t >= st.due[0] + sim.cfg.whcaLate * sim.res.slot) {
+      this.path = [];
+      sim.metrics.replans++;
+    }
 
     if (this.path.length === 0) {
       if (this.cell === this.target) return this.startWork();
@@ -200,7 +239,7 @@ export class Robot {
     }
     if (missing >= 0) {
       this.setWaiting(missing);
-      this.maybeProbe();
+      this.onBlocked();
       return;
     }
 
@@ -213,6 +252,11 @@ export class Robot {
       return;
     }
     this.clearWaiting();
+    // WHCA*: leases in hand, but the plan says not yet.
+    if (st && st.path === this.path && t < st.hold[0]) {
+      this.state = 'IDLE';
+      return;
+    }
 
     if (this.pauseBeforeMove) {
       // The lease check above has passed; now the process freezes (a GC
@@ -278,7 +322,7 @@ export class Robot {
     if (last !== undefined && t - last < this.sim.cfg.retryTicks) return;
     this.pending.set(c, t);
     if (!this.firstAsked.has(c)) this.firstAsked.set(c, t);
-    this.send('m' + this.sim.mgrOf(c), { type: 'REQ', robot: this.id, cell: c, prio: this.priority, tryOnly, floor: floorOf(this.cell) });
+    this.send('m' + this.sim.mgrOf(c), { type: 'REQ', robot: this.id, cell: c, prio: this.priority, tryOnly, floor: floorOf(this.cell), ts: this.ageKey });
   }
 
   setWaiting(c) {
@@ -299,6 +343,74 @@ export class Robot {
     this.sim.recordWait(w);
     this.waitCell = -1;
     this.waitingFor = -1;
+  }
+
+  // Blocked on a cell: what happens next depends on the deadlock strategy.
+  onBlocked() {
+    const t = this.sim.tick;
+    const cfg = this.sim.cfg;
+    switch (this.dl) {
+      case 'timeout':
+        // No detection at all: anyone stuck this long assumes the worst.
+        if (t - this.waitSince >= cfg.waitTimeout) this.giveWay();
+        return;
+      case 'waitdie':
+        return; // decided when the manager says who holds the cell (QUEUED)
+      case 'mm':
+        return this.mmAsk();
+      default:
+        return this.maybeProbe(); // edge-chasing (also the WHCA* fallback)
+    }
+  }
+
+  // Give up the wanted cell without anyone having found a cycle (Timeout,
+  // Wait-Die). With no other way round, step aside so the robot it may be
+  // blocking can get past.
+  giveWay() {
+    this.yieldNow(null, !this.hasAlternative());
+  }
+
+  // Who we wait for changed. In Mitchell–Merritt that is a new block: take a
+  // fresh label above our own, and tell anyone waiting on us.
+  setHolder(h) {
+    if (h === this.waitingFor) return;
+    this.waitingFor = h;
+    if (this.dl === 'mm' && h >= 0) {
+      this.mmU = this.mmV = mmInc(this.mmU, this.id);
+      this.mmBest = null;
+      this.mmTell();
+    }
+  }
+
+  // Priority extension of Mitchell–Merritt: the label also carries the best
+  // robot on the chain to give way, by the edge-chasing rules (one that can
+  // release the cell the robot behind it wants, then one with another way
+  // round, then the lowest priority). This robot as a candidate, for the
+  // robot behind it that wants `cell`:
+  mmCandidate(cell) {
+    const rank = this.releasable(cell) ? 0 : this.waiting && this.hasAlternative() ? 1 : 2;
+    const own = { rank, prio: this.priority, id: this.id };
+    const b = this.mmBest;
+    return b && mmBetter(b, own) ? b : own;
+  }
+
+  // Mitchell–Merritt: ask the robot we wait on for its public label.
+  mmAsk() {
+    const t = this.sim.tick;
+    const cfg = this.sim.cfg;
+    if (this.waitingFor < 0 || t - this.waitSince < cfg.probeAfter || t - this.lastAsk < cfg.probeEvery) return;
+    this.lastAsk = t;
+    this.sim.metrics.probes++;
+    this.send('r' + this.waitingFor, { type: 'MMQ', robot: this.id, wants: this.waitCell });
+  }
+
+  // Push our public label to the robots that asked for it lately.
+  mmTell() {
+    const t = this.sim.tick;
+    for (const [id, a] of this.mmAskers) {
+      if (t - a.t > 3 * this.sim.cfg.probeEvery) this.mmAskers.delete(id);
+      else this.send('r' + id, { type: 'MMU', u: this.mmU, best: this.mmCandidate(a.wants) });
+    }
   }
 
   // Chandy–Misra–Haas: a robot blocked for a while sends a probe along its
@@ -360,7 +472,7 @@ export class Robot {
       if (!byMgr.has(m)) byMgr.set(m, []);
       byMgr.get(m).push({ cell, epoch: l.epoch });
     }
-    for (const [m, cells] of byMgr) this.send('m' + m, { type: 'RENEW', robot: this.id, cells, sentAt: t });
+    for (const [m, cells] of byMgr) this.send('m' + m, { type: 'RENEW', robot: this.id, cells, sentAt: t, ts: this.ageKey });
   }
 
   // ───────────────────────────── messages ─────────────────────────────
@@ -400,14 +512,46 @@ export class Robot {
         return;
       }
       case 'QUEUED':
-        if (m.cell === this.waitCell) this.waitingFor = m.holder;
+        if (m.cell === this.waitCell) this.setHolder(m.holder);
+        // Wait-Die: only an older robot may wait for a younger one. A younger
+        // one "dies": it gives up the cell and tries again later, keeping its
+        // age, so in time it is the oldest and always gets to wait.
+        if (this.dl === 'waitdie' && this.waiting && this.pending.has(m.cell) && !(this.ageKey < m.holderTs)) {
+          sim.metrics.dies++;
+          // Step aside only if an older robot is waiting for our cell.
+          const n = this.nudge;
+          this.yieldNow(null, !!n && this.footprint.includes(n.cell) && sim.tick - n.t < 40);
+        }
         return;
+      case 'NUDGE':
+        this.nudge = { cell: m.cell, t: sim.tick };
+        return;
+      case 'MMQ':
+        this.mmAskers.set(m.robot, { t: sim.tick, wants: m.wants });
+        this.send('r' + m.robot, { type: 'MMU', u: this.mmU, best: this.mmCandidate(m.wants) });
+        return;
+      case 'MMU': {
+        // Only news from the robot we wait on right now counts.
+        if (!this.waiting || 'r' + this.waitingFor !== m.from) return;
+        if (m.u > this.mmU) {
+          // Transmit: a larger label travels back along the wait-for edges.
+          this.mmU = m.u;
+          this.mmBest = m.best;
+          this.mmTell();
+        } else if (m.u === this.mmU && this.mmU === this.mmV) {
+          // Our own label came all the way round: we are on a cycle, and as
+          // the robot with the largest label we are its only detector. The
+          // label has passed every member, so m.best is the cycle's victim.
+          sim.onLabelCycle(this, m.best);
+        }
+        return;
+      }
       case 'DENIED': {
         // All-or-nothing: give back the segment cells beyond the next one,
         // then retry after a short random backoff.
         this.pending.delete(m.cell);
         this.firstAsked.delete(m.cell);
-        if (m.cell === this.waitCell) this.waitingFor = m.holder;
+        if (m.cell === this.waitCell) this.setHolder(m.holder);
         for (const [cell, l] of this.leases) {
           if (cell === this.cell || (cell === this.path[0] && !sim.layout.box[cell])) continue;
           this.leases.delete(cell);
@@ -532,7 +676,61 @@ export class Robot {
     if (!path) path = astar(this.cell, this.target, null, true, rc, L);
     if (!path) path = astar(this.cell, this.target, avoiding, false, rc, L);
     this.path = path || [];
+    this.st = null;
+    if (this.sim.res) this.planWindow();
     if (this.protocol) this.releaseUnwanted();
+  }
+
+  // WHCA*: replace the first stretch of the path with a space-time plan that
+  // keeps clear of other robots' reservations, and reserve it.
+  planWindow() {
+    const sim = this.sim;
+    const res = sim.res;
+    const L = sim.layout;
+    const t = sim.tick;
+    res.clear(this.id);
+    const p = this.path;
+    // Lifts are planned as before: through the door, ride, out.
+    if (!p.length || (L.lift && (L.lift[this.cell] || L.lift[p[0]]))) return;
+    sim.metrics.msgs += 2; // ask the planning service, get the plan back
+    const window = sim.cfg.whcaWindow;
+    const slot0 = Math.floor(t / res.slot);
+    const avoid = this.avoid.size ? (c) => this.avoid.has(c) : null;
+    const cells = spaceTimePlan({ L, res, robot: this.id, start: this.cell, goal: this.target, slot0, window, avoid, regionCost: this.regionCost() });
+    if (!cells) return;
+    for (let k = 0; k < cells.length; k++) {
+      res.reserve(this.id, slot0 + k, cells[k]);
+      if (k && cells[k] !== cells[k - 1]) res.reserve(this.id, slot0 + k, cells[k - 1]);
+    }
+    // Follow the first half window, then plan again. Never stop inside a
+    // crossing box: the whole run through it is leased at once.
+    let end = Math.min(cells.length - 1, window >> 1);
+    while (end < cells.length - 1 && L.box[cells[end]]) end++;
+    const path = [], due = [], hold = [];
+    for (let k = 1; k <= end; k++) {
+      if (cells[k] === cells[k - 1]) continue;
+      path.push(cells[k]);
+      due.push((slot0 + k) * res.slot);
+      hold.push(k > 1 && cells[k - 1] === cells[k - 2] ? (slot0 + k) * res.slot : -1);
+    }
+    // Only waits in the first half: hold still (keeping the reservation) and
+    // plan again shortly. Reservations alone can gridlock (everyone waiting
+    // for a slot someone else keeps reserving), so after two such plans in a
+    // row, drive the plain path and let the leases sort it out.
+    if (!path.length) {
+      if (++this.stStalls <= 2) {
+        this.path = [];
+        return;
+      }
+      res.clear(this.id);
+      sim.metrics.stalls++;
+      this.stStalls = 0;
+      this.path = p;
+      return;
+    }
+    this.stStalls = 0;
+    this.path = path;
+    this.st = { path, due, hold };
   }
 
   // ───────────────────────────── world callbacks ─────────────────────────────
@@ -541,6 +739,10 @@ export class Robot {
     const from = this.cell;
     this.cell = to;
     this.path.shift();
+    if (this.st && this.st.path === this.path) {
+      this.st.due.shift();
+      this.st.hold.shift();
+    }
     this.motion = null;
     if (this.state === 'MOVING') this.state = 'IDLE';
     const l = this.leases.get(from);
@@ -632,12 +834,20 @@ export class Robot {
     const near = [...stations].sort((a, b) => Math.abs(xOf(a) - px) + Math.abs(yOf(a) - py) - Math.abs(xOf(b) - px) - Math.abs(yOf(b) - py));
     this.task = { stage: 'pickup', pickup, dropoff: near[sim.rng.int(2)] };
     this.taskWait = 0;
+    this.age = sim.tick;
     this.path = [];
   }
 
   startWork() {
     this.workLeft = this.task.work ?? this.sim.cfg.workTicks;
     this.state = 'WORK';
+    // WHCA*: claim the cell for as long as the work takes.
+    const res = this.sim.res;
+    if (res) {
+      res.clear(this.id);
+      const s0 = Math.floor(this.sim.tick / res.slot);
+      for (let s = s0; s <= s0 + Math.ceil(this.workLeft / res.slot); s++) res.reserve(this.id, s, this.cell);
+    }
   }
 
   finishWork() {

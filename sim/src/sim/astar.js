@@ -11,10 +11,10 @@ import { W, H, RW, RH, RX, RF, NF, MOVE_TICKS, LIFT_FLOOR_TICKS, rideTicks, getL
 
 const DX = [1, 0, -1, 0];
 const DY = [0, 1, 0, -1];
-const TURN_COST = 0.35;
+export const TURN_COST = 0.35;
 const WRONG_WAY_COST = 3;
-const STATION_COST = 8;
-const RIDE_COST = (floors) => rideTicks(floors) / MOVE_TICKS; // rides are priced in cells
+export const STATION_COST = 8;
+export const RIDE_COST = (floors) => rideTicks(floors) / MOVE_TICKS; // rides are priced in cells
 const FLOOR_H = LIFT_FLOOR_TICKS / MOVE_TICKS; // heuristic per floor apart
 
 // Search buffers, sized for the largest layout seen so far.

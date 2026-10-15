@@ -15,6 +15,7 @@ import { LiveView } from './render/live.js';
 import { Hud } from './ui/hud.js';
 import { Bench } from './ui/bench.js';
 import { Compare } from './ui/compare.js';
+import { Saved } from './ui/saved.js';
 import { Tour } from './ui/tour.js';
 import { Scrubber } from './ui/scrubber.js';
 import { Timeline } from './ui/timeline.js';
@@ -108,6 +109,7 @@ app.tour = tour;
 if (import.meta.env.DEV) window.__app = app;
 const bench = new Bench(app);
 const compare = new Compare(app);
+const saved = new Saved(app, bench);
 const scrubber = new Scrubber(app);
 const timeline = new Timeline(app);
 app.timeline = timeline;
@@ -190,7 +192,8 @@ app.startScenario = (key, opts = {}) => {
   const sc = SCENARIOS[key];
   const { maxBackground, ...over } = sc.cfg;
   // Scenarios are scripted on a single floor.
-  const cfg = { ...app.cfg, floors: 1, ...over, robots: Math.min(app.cfg.robots, maxBackground ?? 999) };
+  // Scenarios are narrated for edge-chasing, whatever the picker says.
+  const cfg = { ...app.cfg, floors: 1, deadlock: 'cmh', ...over, robots: Math.min(app.cfg.robots, maxBackground ?? 999) };
   app.scenario = key;
   // viewed: the step whose floor view and framing were last applied (-1:
   // none yet; null: the scenario has no per-step views, or the tour drives
@@ -362,6 +365,7 @@ window.addEventListener('keydown', (e) => {
   else if (e.key === '6') app.startScenario('lift');
   else if (e.key === 'b' || e.key === 'B') bench.open('sweep');
   else if (e.key === 'c' || e.key === 'C') bench.open('compare');
+  else if (e.key === 'p' || e.key === 'P') bench.open('saved');
   else if (e.key === 't' || e.key === 'T') tour.active ? tour.end() : tour.start();
   else if (e.key === 'd' || e.key === 'D') app.toggleTheme();
   else if (tour.active && e.key === 'ArrowRight') tour.next();
@@ -502,6 +506,7 @@ onThemeChange(() => {
   tour.refresh();
   bench.refresh();
   compare.refresh();
+  saved.refresh();
   timeline.refresh();
   scrubber.refresh();
 });

@@ -1,12 +1,23 @@
 // DOM side of the demo: KPI tiles, controls, event feed, inspector and the
 // scenario narration card.
-import { STATUS, EVENT_COLORS } from '../render/palette.js';
+import { STATUS, EVENT_COLORS, DEADLOCK_SERIES } from '../render/palette.js';
 import { theme } from '../render/theme.js';
 import { robotStatusKey } from '../render/live.js';
 import { xOf, yOf, floorOf, regionOf, fmtCell, cellOf } from '../sim/layout.js';
 import { fmtEpoch } from '../sim/manager.js';
+import { dropdown } from './dropdown.js';
+import { makeDraggable } from './draggable.js';
 
 const $ = (id) => document.getElementById(id);
+// Deadlock strategies of the lease + detection mode: the tab's subtitle and
+// how the Deadlocks tile reads.
+export const DEADLOCK = {
+  cmh: { short: 'edge-chasing', note: 'Blocked robots send probes along wait-for edges. A probe that returns has found a cycle.' },
+  mm: { short: 'label passing', note: 'Labels travel back along wait-for edges. Exactly one robot spots each cycle.' },
+  waitdie: { short: 'wait-die', noDetect: 'prevention: none can form', note: 'Only older robots may wait. Younger ones give up and replan. Locks up above about 150 robots.' },
+  timeout: { short: 'timeout', noDetect: 'no detection', note: 'No detection: any robot that has waited 2 s gives way.' },
+  whca: { short: 'WHCA* + probes', note: 'Robots reserve routes in space and time to avoid each other, with probes as a fallback.' },
+};
 const FEED_KINDS = new Set(['deadlock', 'fenced', 'blocked', 'regrant', 'cleared', 'crash', 'pause', 'collision', 'respawn', 'mgrdown', 'mgrrestart', 'reconciled', 'partition', 'healed']);
 
 export class Hud {
@@ -123,6 +134,18 @@ export class Hud {
       app.cfg.clockDrift = v / 100;
       $('out-drift').textContent = `±${v}%`;
     });
+    // The picker's colour dot and one-line note follow the choice at once.
+    const menu = dropdown($('in-deadlock'), (dl) => ({ dot: DEADLOCK_SERIES[dl].hex, note: DEADLOCK[dl].note }));
+    this.showDeadlock = (dl) => {
+      menu.sync();
+      $('dl-note').textContent = DEADLOCK[dl].note;
+    };
+    $('in-deadlock').addEventListener('input', (e) => this.showDeadlock(e.target.value));
+    $('in-deadlock').addEventListener('change', (e) => {
+      app.cfg.deadlock = e.target.value;
+      if (app.cfg.mode !== 'detect') app.cfg.mode = 'detect';
+      app.restart();
+    });
     $('in-congestion').addEventListener('change', (e) => {
       app.cfg.congestion = e.target.checked;
       app.restart();
@@ -161,6 +184,7 @@ export class Hud {
     $('nar-exit').addEventListener('click', () => this.app.exitScenario());
     $('nar-replay').addEventListener('click', () => this.app.startScenario(this.app.scenario));
     $('nar-next').addEventListener('click', () => this.app.setRunning(true));
+    makeDraggable($('narration'), [document.querySelector('.nar-head')]);
     // Scenarios pause at each new step unless Auto is on (remembered per browser).
     try {
       this.autoPlay = localStorage.getItem('scenarioAuto') === '1';
@@ -210,6 +234,12 @@ export class Hud {
     document.querySelectorAll('.modes button').forEach((b) => b.classList.toggle('on', b.dataset.mode === 'multi' ? multi : !multi && b.dataset.mode === sim.cfg.mode));
     document.querySelectorAll('.scn[data-scenario]').forEach((b) => b.classList.toggle('on', b.dataset.scenario === this.app.scenario));
     const base = sim.cfg.mode === 'baseline';
+    const detect = sim.cfg.mode === 'detect';
+    $('in-deadlock').value = sim.cfg.deadlock;
+    this.showDeadlock(sim.cfg.deadlock);
+    $('field-deadlock').classList.toggle('off', !detect);
+    $('mode-dl').textContent = DEADLOCK[sim.cfg.deadlock].short;
+    $('kpi-dl-label').textContent = detect && DEADLOCK[sim.cfg.deadlock].noDetect ? 'Gave way' : 'Deadlocks';
     $('hero-title').textContent = base ? 'Collisions (unprotected)' : 'Protected collisions';
     $('hero-chip').textContent = base ? 'no coordination' : 'must be 0';
     $('inspector').hidden = true;
@@ -272,8 +302,15 @@ export class Hud {
     this.prevCollisions = s.collisions;
 
     $('kpi-thr').textContent = s.throughput.toFixed(0);
-    $('kpi-dl').textContent = s.deadlocks;
-    $('kpi-dl-sub').textContent = base ? 'not tracked' : `${s.resolved} resolved${s.resolved ? ` · ${s.avgResolve.toFixed(1)}s` : ''}`;
+    const noDetect = sim.cfg.mode === 'detect' && DEADLOCK[sim.cfg.deadlock].noDetect;
+    if (noDetect) {
+      // Nothing is detected: show how often robots gave way instead.
+      $('kpi-dl').textContent = sim.metrics.yields;
+      $('kpi-dl-sub').textContent = noDetect;
+    } else {
+      $('kpi-dl').textContent = s.deadlocks;
+      $('kpi-dl-sub').textContent = base ? 'not tracked' : `${s.resolved} resolved${s.resolved ? ` · ${s.avgResolve.toFixed(1)}s` : ''}`;
+    }
     $('kpi-mpm').textContent = s.msgsPerMove.toFixed(1);
     $('kpi-mpm-sub').textContent = `${s.dropped.toLocaleString()} dropped`;
     $('kpi-fenced').textContent = s.fenced;

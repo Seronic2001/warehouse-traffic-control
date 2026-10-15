@@ -33,7 +33,7 @@
 
       <div class="modes" role="tablist" aria-label="Coordination mode">
         <button data-mode="baseline" role="tab"><span>Baseline</span><small>no coordination</small></button>
-        <button data-mode="detect" role="tab"><span>Leases + detection</span><small>edge-chasing</small></button>
+        <button data-mode="detect" role="tab"><span>Leases + detection</span><small id="mode-dl">edge-chasing</small></button>
         <button data-mode="ordered" role="tab"><span>Ordered acquisition</span><small>prevention</small></button>
         <button data-mode="central" role="tab"><span>Centralised</span><small>one server</small></button>
         <button data-mode="multi" role="tab"><span>Multi-storey</span><small>floors + lifts</small></button>
@@ -95,6 +95,19 @@
         <button class="collapse" data-target="controls" title="Collapse">–</button>
       </div>
       <div class="panel-body">
+        <div class="field" id="field-deadlock" title="How the lease + detection mode deals with deadlocks. The other modes keep their own rules.">
+          <span>Deadlock handling</span>
+          <span class="select">
+            <select id="in-deadlock">
+              <option value="cmh">Edge-chasing (Chandy–Misra–Haas)</option>
+              <option value="mm">Label passing (Mitchell–Merritt)</option>
+              <option value="waitdie">Wait-Die</option>
+              <option value="timeout">Timeout</option>
+              <option value="whca">WHCA* + edge-chasing</option>
+            </select>
+          </span>
+          <small class="field-note" id="dl-note"></small>
+        </div>
         <label class="field">
           <span>Robots <output id="out-robots">120</output></span>
           <input id="in-robots" type="range" min="50" max="200" step="10" value="120" />
@@ -169,7 +182,7 @@
             <div class="t-row"><div class="t-value" id="kpi-thr">0</div><svg id="spark" class="spark" viewBox="0 0 120 32" preserveAspectRatio="none"><title>Throughput, last 60 s</title><path class="area" /><path class="line" /></svg></div>
           </div>
           <div class="tile">
-            <div class="t-label">Deadlocks</div>
+            <div class="t-label" id="kpi-dl-label">Deadlocks</div>
             <div class="t-value" id="kpi-dl">0</div>
             <div class="t-sub" id="kpi-dl-sub">0 resolved</div>
           </div>
@@ -287,12 +300,13 @@
         <div class="bench-tabs" id="bench-tabs" role="tablist">
           <button role="tab" data-tab="sweep" class="on" aria-selected="true">Strategies</button>
           <button role="tab" data-tab="compare" aria-selected="false">vs Centralised</button>
+          <button role="tab" data-tab="saved" aria-selected="false">Saved results</button>
         </div>
         <div class="bench-pane" id="bench-pane-sweep" role="tabpanel">
           <div class="modal-head">
             <div>
               <h2>Evaluation sweep</h2>
-              <p>Four sweeps run in background workers, spread across your CPU cores: strategies vs density, the lease safety margin, recovery after failures, and congestion control. Each run uses a fixed seed, so the results can be replayed exactly. It takes <b id="bench-dur">a minute or two</b>.</p>
+              <p>Six sweeps run in background workers, spread across your CPU cores: strategies vs density, the lease safety margin, recovery after failures, congestion control, multi-storey lifts, and five deadlock strategies. Each run uses a fixed seed, so the results can be replayed exactly. It takes <b id="bench-dur">a minute or two</b>.</p>
             </div>
             <div class="modal-actions">
               <button id="bench-table-btn" class="ghost" disabled>Table</button>
@@ -319,6 +333,31 @@
           <div class="bench-progress" id="cmp-progress" hidden><div></div><span></span></div>
           <div class="bench-legend" id="cmp-legend"></div>
           <div class="bench-grid" id="cmp-grid"></div>
+        </div>
+        <div class="bench-pane" id="bench-pane-saved" role="tabpanel" hidden>
+          <div class="modal-head">
+            <div>
+              <h2>Saved results</h2>
+              <p>Every run from the other two tabs, done ahead of time with the default settings, so the charts appear at once. <span id="saved-meta"></span> The other tabs re-run everything live with the current settings.</p>
+            </div>
+            <div class="modal-actions">
+              <button id="saved-table-btn" class="ghost">Table</button>
+              <button class="ghost bench-close" title="Close">×</button>
+            </div>
+          </div>
+          <nav class="saved-jump" aria-label="Jump to">
+            <button data-jump="saved-grid">Strategies</button>
+            <button data-jump="saved-dl">Deadlock strategies</button>
+            <button data-jump="saved-cmp">vs Centralised</button>
+          </nav>
+          <div class="bench-legend" id="saved-legend"></div>
+          <div class="bench-grid" id="saved-grid"><div class="bench-empty">Loading saved results…</div></div>
+          <div class="bench-table" id="saved-table" hidden></div>
+          <div class="saved-part" id="saved-cmp">
+            <h2>Distributed vs centralised</h2>
+            <div class="bench-legend" id="saved-cmp-legend"></div>
+            <div class="bench-grid" id="saved-cmp-grid"></div>
+          </div>
         </div>
       </div>
     </div>
